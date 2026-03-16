@@ -262,11 +262,10 @@ const World = struct {
 };
 
 fn randomPersonType(random: std.Random) PersonType {
-    return switch (random.uintLessThan(u8, 3)) {
-        0 => .male,
-        1 => .female,
-        else => .futa,
-    };
+    const person_type: u8 = random.uintLessThan(u8, 100);
+    if (person_type < 70) return .male;
+    if (person_type < 95) return .female;
+    return .futa;
 }
 
 fn randomFirstName(kind: PersonType, random: std.Random) []const u8 {
