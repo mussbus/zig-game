@@ -520,55 +520,53 @@ pub fn main() !void {
 
         const spawned = try world.addPerson(new_person, allocator);
         if (!spawned) {
-            std.debug.print(
-                "Tick: skipped spawning {s} {s} ({s}) at {s}; place is at capacity ({d})\n",
-                .{
-                    new_person.first_name,
-                    new_person.last_name,
-                    new_person.kind.asString(),
-                    new_person.place.asString(),
-                    World.place_capacity,
-                },
-            );
-            std.Thread.sleep(std.time.ns_per_s);
-            continue;
+            // std.debug.print(
+            //     "Tick: skipped spawning {s} {s} ({s}) at {s}; place is at capacity ({d})\n",
+            //     .{
+            //         new_person.first_name,
+            //         new_person.last_name,
+            //         new_person.kind.asString(),
+            //         new_person.place.asString(),
+            //         World.place_capacity,
+            //     },
+            // );
         }
 
-        std.debug.print(
-            "Tick: created {s} {s} ({s}) at {s} [moods: warm={d}, energy={d}, happiness={d}; skills: top={d}, front={d}, back={d}, wet={d}, covered={d}, deep={d}, rough={d}, submit={d}, control={d}; kinks: top={d}, front={d}, back={d}, wet={d}, covered={d}, deep={d}, rough={d}, submit={d}, control={d}; owned_by_id={any}]\nTotal={d} [male={d}, female={d}, futa={d}]\n\n",
-            .{
-                new_person.first_name,
-                new_person.last_name,
-                new_person.kind.asString(),
-                new_person.place.asString(),
-                new_person.moods.warm,
-                new_person.moods.energy,
-                new_person.moods.happiness,
-                new_person.skills.top,
-                new_person.skills.front,
-                new_person.skills.back,
-                new_person.skills.wet,
-                new_person.skills.covered,
-                new_person.skills.deep,
-                new_person.skills.rough,
-                new_person.skills.submit,
-                new_person.skills.control,
-                new_person.kinks.top,
-                new_person.kinks.front,
-                new_person.kinks.back,
-                new_person.kinks.wet,
-                new_person.kinks.covered,
-                new_person.kinks.deep,
-                new_person.kinks.rough,
-                new_person.kinks.submit,
-                new_person.kinks.control,
-                new_person.owned_by_id,
-                world.totalPeople(),
-                world.male_count,
-                world.female_count,
-                world.futa_count,
-            },
-        );
+        // std.debug.print(
+        //     "Tick: created {s} {s} ({s}) at {s} [moods: warm={d}, energy={d}, happiness={d}; skills: top={d}, front={d}, back={d}, wet={d}, covered={d}, deep={d}, rough={d}, submit={d}, control={d}; kinks: top={d}, front={d}, back={d}, wet={d}, covered={d}, deep={d}, rough={d}, submit={d}, control={d}; owned_by_id={any}]\nTotal={d} [male={d}, female={d}, futa={d}]\n\n",
+        //     .{
+        //         new_person.first_name,
+        //         new_person.last_name,
+        //         new_person.kind.asString(),
+        //         new_person.place.asString(),
+        //         new_person.moods.warm,
+        //         new_person.moods.energy,
+        //         new_person.moods.happiness,
+        //         new_person.skills.top,
+        //         new_person.skills.front,
+        //         new_person.skills.back,
+        //         new_person.skills.wet,
+        //         new_person.skills.covered,
+        //         new_person.skills.deep,
+        //         new_person.skills.rough,
+        //         new_person.skills.submit,
+        //         new_person.skills.control,
+        //         new_person.kinks.top,
+        //         new_person.kinks.front,
+        //         new_person.kinks.back,
+        //         new_person.kinks.wet,
+        //         new_person.kinks.covered,
+        //         new_person.kinks.deep,
+        //         new_person.kinks.rough,
+        //         new_person.kinks.submit,
+        //         new_person.kinks.control,
+        //         new_person.owned_by_id,
+        //         world.totalPeople(),
+        //         world.male_count,
+        //         world.female_count,
+        //         world.futa_count,
+        //     },
+        // );
 
         if (tick % 10 == 0) {
             updateConnectionActivity(&world, random);
