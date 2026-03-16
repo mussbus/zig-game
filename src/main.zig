@@ -903,6 +903,30 @@ fn worldReset(world: *World) void {
     world.futa_count = 0;
 }
 
+fn prefillPlaces(world: *World, random: std.Random, allocator: std.mem.Allocator) !void {
+    const target_population = (World.place_capacity * 3) / 4;
+
+    for (std.enums.values(Place)) |place| {
+        while (world.place_population[@intFromEnum(place)] < target_population) {
+            const kind = randomPersonType(random);
+            const new_person = Person{
+                .id = world.totalPeople() + 1,
+                .first_name = randomFirstName(kind, random),
+                .last_name = randomLastName(random),
+                .age = randomAge(random),
+                .kind = kind,
+                .place = place,
+                .moods = randomMoodLevels(random),
+                .kinks = randomKinkLevels(random),
+                .skills = randomSkillLevels(random),
+                .owned_by_id = randomOwnedById(kind, place, world.people.items, random),
+            };
+
+            _ = try world.addPerson(new_person, allocator);
+        }
+    }
+}
+
 fn stepSimulation(world: *World, tick: *u64, random: std.Random, allocator: std.mem.Allocator) !void {
     tick.* += 1;
     const kind = randomPersonType(random);
@@ -1352,6 +1376,8 @@ pub fn main() !void {
     var prng = std.Random.DefaultPrng.init(seed);
     const random = prng.random();
 
+    try prefillPlaces(&world, random, allocator);
+
     var ui = UiState{};
     var tick: u64 = 0;
     var last_step_ms = std.time.milliTimestamp();
@@ -1404,6 +1430,7 @@ pub fn main() !void {
                 ui.paused = !ui.paused;
             } else if (reset_rect.contains(click.x, click.y)) {
                 worldReset(&world);
+                try prefillPlaces(&world, random, allocator);
                 tick = 0;
                 ui.selected_place = null;
                 last_step_ms = std.time.milliTimestamp();
