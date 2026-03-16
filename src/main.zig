@@ -114,6 +114,8 @@ const Person = struct {
 };
 
 const World = struct {
+    const place_capacity: usize = 25;
+
     people: std.ArrayList(Person),
     place_population: [10]usize,
     male_count: usize,
@@ -134,7 +136,12 @@ const World = struct {
         self.people.deinit(allocator);
     }
 
-    pub fn addPerson(self: *World, person: Person, allocator: std.mem.Allocator) !void {
+    pub fn addPerson(self: *World, person: Person, allocator: std.mem.Allocator) !bool {
+        const place_index = @intFromEnum(person.place);
+        if (self.place_population[place_index] >= place_capacity) {
+            return false;
+        }
+
         try self.people.append(allocator, person);
 
         switch (person.kind) {
@@ -143,7 +150,8 @@ const World = struct {
             .futa => self.futa_count += 1,
         }
 
-        self.place_population[@intFromEnum(person.place)] += 1;
+        self.place_population[place_index] += 1;
+        return true;
     }
 
     pub fn totalPeople(self: *const World) usize {
@@ -510,7 +518,21 @@ pub fn main() !void {
             .connection_type = null,
         };
 
-        try world.addPerson(new_person, allocator);
+        const spawned = try world.addPerson(new_person, allocator);
+        if (!spawned) {
+            std.debug.print(
+                "Tick: skipped spawning {s} {s} ({s}) at {s}; place is at capacity ({d})\n",
+                .{
+                    new_person.first_name,
+                    new_person.last_name,
+                    new_person.kind.asString(),
+                    new_person.place.asString(),
+                    World.place_capacity,
+                },
+            );
+            std.Thread.sleep(std.time.ns_per_s);
+            continue;
+        }
 
         std.debug.print(
             "Tick: created {s} {s} ({s}) at {s} [moods: warm={d}, energy={d}, happiness={d}; skills: top={d}, front={d}, back={d}, wet={d}, covered={d}, deep={d}, rough={d}, submit={d}, control={d}; kinks: top={d}, front={d}, back={d}, wet={d}, covered={d}, deep={d}, rough={d}, submit={d}, control={d}; owned_by_id={any}]\nTotal={d} [male={d}, female={d}, futa={d}]\n\n",
