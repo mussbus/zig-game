@@ -84,7 +84,10 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
-    exe.linkSystemLibrary("X11");
+    if (target.result.os.tag == .windows) {
+        exe.linkSystemLibrary("user32");
+        exe.linkSystemLibrary("gdi32");
+    }
 
     // This declares intent for the executable to be installed into the
     // install prefix when running `zig build` (i.e. when executing the default

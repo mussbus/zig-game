@@ -1,7 +1,14 @@
 const std = @import("std");
+const builtin = @import("builtin");
+
+comptime {
+    if (builtin.os.tag != .windows) {
+        @compileError("This UI build targets Windows only.");
+    }
+}
+
 const c = @cImport({
-    @cInclude("X11/Xlib.h");
-    @cInclude("X11/Xutil.h");
+    @cInclude("windows.h");
 });
 
 const male_first_names = [_][]const u8{
@@ -499,13 +506,12 @@ const UiState = struct {
     selected_place: ?Place = null,
 };
 
-fn worldReset(world: *World, allocator: std.mem.Allocator) void {
+fn worldReset(world: *World) void {
     world.people.clearRetainingCapacity();
     world.place_population = [_]usize{0} ** 10;
     world.male_count = 0;
     world.female_count = 0;
     world.futa_count = 0;
-    _ = allocator;
 }
 
 fn stepSimulation(world: *World, tick: *u64, random: std.Random, allocator: std.mem.Allocator) !void {
@@ -536,32 +542,53 @@ fn findPersonById(people: []const Person, person_id: usize) ?Person {
     for (people) |person| {
         if (person.id == person_id) return person;
     }
-
     return null;
 }
 
-fn allocColor(display: ?*c.Display, color_name: [*:0]const u8) c_ulong {
-    const screen = c.DefaultScreen(display);
-    const colormap = c.DefaultColormap(display, screen);
-    var color: c.XColor = undefined;
-    var exact_color: c.XColor = undefined;
-    if (c.XAllocNamedColor(display, colormap, color_name, &color, &exact_color) == 0) {
-        return c.BlackPixel(display, screen);
+fn rgb(r: u8, g: u8, b: u8) c.COLORREF {
+    return @as(c.COLORREF, r) | (@as(c.COLORREF, g) << 8) | (@as(c.COLORREF, b) << 16);
+}
+
+fn toWinRect(rect: Rect) c.RECT {
+    return .{
+        .left = rect.x,
+        .top = rect.y,
+        .right = rect.x + rect.w,
+        .bottom = rect.y + rect.h,
+    };
+}
+
+fn fillRectColor(hdc: c.HDC, rect: Rect, color: c.COLORREF) void {
+    const brush = c.CreateSolidBrush(color);
+    defer _ = c.DeleteObject(brush);
+    var win_rect = toWinRect(rect);
+    _ = c.FillRect(hdc, &win_rect, brush);
+}
+
+fn drawText(hdc: c.HDC, x: i32, y: i32, text: []const u8) void {
+    _ = c.TextOutA(hdc, x, y, text.ptr, @as(c_int, @intCast(text.len)));
+}
+
+fn drawButton(hdc: c.HDC, rect: Rect, label: []const u8, fill: c.COLORREF) void {
+    fillRectColor(hdc, rect, fill);
+
+    const border_brush = c.GetStockObject(c.BLACK_BRUSH);
+    var border_rect = toWinRect(rect);
+    _ = c.FrameRect(hdc, &border_rect, @ptrCast(border_brush));
+
+    _ = c.SetTextColor(hdc, rgb(0, 0, 0));
+    _ = c.SetBkMode(hdc, c.TRANSPARENT);
+    drawText(hdc, rect.x + 10, rect.y + 10, label);
+}
+
+fn wndProc(hwnd: c.HWND, msg: c.UINT, w_param: c.WPARAM, l_param: c.LPARAM) callconv(.c) c.LRESULT {
+    switch (msg) {
+        c.WM_DESTROY => {
+            c.PostQuitMessage(0);
+            return 0;
+        },
+        else => return c.DefWindowProcA(hwnd, msg, w_param, l_param),
     }
-    return color.pixel;
-}
-
-fn drawText(display: ?*c.Display, window: c.Window, gc: c.GC, x: i32, y: i32, text: []const u8) void {
-    c.XDrawString(display, window, gc, x, y, text.ptr, @as(c_int, @intCast(text.len)));
-}
-
-fn drawButton(display: ?*c.Display, window: c.Window, gc: c.GC, rect: Rect, label: []const u8, fill: c_ulong, border: c_ulong, text: c_ulong) void {
-    c.XSetForeground(display, gc, fill);
-    c.XFillRectangle(display, window, gc, rect.x, rect.y, @as(c_uint, @intCast(rect.w)), @as(c_uint, @intCast(rect.h)));
-    c.XSetForeground(display, gc, border);
-    c.XDrawRectangle(display, window, gc, rect.x, rect.y, @as(c_uint, @intCast(rect.w)), @as(c_uint, @intCast(rect.h)));
-    c.XSetForeground(display, gc, text);
-    drawText(display, window, gc, rect.x + 10, rect.y + 25, label);
 }
 
 pub fn main() !void {
@@ -577,26 +604,30 @@ pub fn main() !void {
     var world = World.init();
     defer world.deinit(allocator);
 
-    const display = c.XOpenDisplay(null) orelse return error.DisplayNotAvailable;
-    defer _ = c.XCloseDisplay(display);
-    const screen = c.DefaultScreen(display);
-    const root = c.RootWindow(display, screen);
-    const window = c.XCreateSimpleWindow(display, root, 50, 50, 1200, 800, 1, c.BlackPixel(display, screen), c.WhitePixel(display, screen));
-    _ = c.XStoreName(display, window, "Zig World UI");
-    _ = c.XSelectInput(display, window, c.ExposureMask | c.ButtonPressMask | c.PointerMotionMask | c.StructureNotifyMask);
+    const h_instance = c.GetModuleHandleA(null);
+    var wc: c.WNDCLASSA = std.mem.zeroes(c.WNDCLASSA);
+    wc.style = c.CS_HREDRAW | c.CS_VREDRAW;
+    wc.lpfnWndProc = wndProc;
+    wc.hInstance = h_instance;
+    wc.lpszClassName = "ZigGameWindowClass";
+    wc.hCursor = c.LoadCursorA(null, c.IDC_ARROW);
 
-    const wm_delete = c.XInternAtom(display, "WM_DELETE_WINDOW", c.False);
-    _ = c.XSetWMProtocols(display, window, @ptrCast(&wm_delete), 1);
+    if (c.RegisterClassA(&wc) == 0) return error.RegisterClassFailed;
 
-    _ = c.XMapWindow(display, window);
-    const gc = c.XCreateGC(display, window, 0, null);
-    defer _ = c.XFreeGC(display, gc);
-
-    const black = c.BlackPixel(display, screen);
-    const white = c.WhitePixel(display, screen);
-    const light_gray = allocColor(display, "gray90");
-    const hover_gray = allocColor(display, "gray80");
-    const blue = allocColor(display, "lightblue");
+    const hwnd = c.CreateWindowExA(
+        0,
+        wc.lpszClassName,
+        "Zig World UI",
+        c.WS_OVERLAPPEDWINDOW | c.WS_VISIBLE,
+        c.CW_USEDEFAULT,
+        c.CW_USEDEFAULT,
+        1200,
+        800,
+        null,
+        null,
+        h_instance,
+        null,
+    ) orelse return error.WindowCreateFailed;
 
     var seed: u64 = undefined;
     try std.posix.getrandom(std.mem.asBytes(&seed));
@@ -607,40 +638,33 @@ pub fn main() !void {
     var tick: u64 = 0;
     var last_step_ms = std.time.milliTimestamp();
     var should_quit = false;
+
     while (!should_quit) {
-        var mouse_x: i32 = 0;
-        var mouse_y: i32 = 0;
+        var msg: c.MSG = undefined;
         var click_pos: ?struct { x: i32, y: i32 } = null;
 
-        while (c.XPending(display) > 0) {
-            var event: c.XEvent = undefined;
-            _ = c.XNextEvent(display, &event);
-            switch (event.type) {
-                c.ClientMessage => {
-                    const atom = event.xclient.data.l[0];
-                    if (@as(c_ulong, @intCast(atom)) == wm_delete) {
-                        should_quit = true;
-                    }
-                },
-                c.ButtonPress => {
-                    if (event.xbutton.button == c.Button1) {
-                        click_pos = .{ .x = event.xbutton.x, .y = event.xbutton.y };
-                    }
-                },
-                else => {},
+        while (c.PeekMessageA(&msg, null, 0, 0, c.PM_REMOVE) != 0) {
+            if (msg.message == c.WM_QUIT) {
+                should_quit = true;
+                break;
             }
+
+            if (msg.message == c.WM_LBUTTONDOWN) {
+                var cursor: c.POINT = undefined;
+                _ = c.GetCursorPos(&cursor);
+                _ = c.ScreenToClient(hwnd, &cursor);
+                click_pos = .{ .x = cursor.x, .y = cursor.y };
+            }
+
+            _ = c.TranslateMessage(&msg);
+            _ = c.DispatchMessageA(&msg);
         }
 
-        var root_return: c.Window = 0;
-        var child_return: c.Window = 0;
-        var root_x: c_int = 0;
-        var root_y: c_int = 0;
-        var win_x: c_int = 0;
-        var win_y: c_int = 0;
-        var mask: c_uint = 0;
-        _ = c.XQueryPointer(display, window, &root_return, &child_return, &root_x, &root_y, &win_x, &win_y, &mask);
-        mouse_x = win_x;
-        mouse_y = win_y;
+        var cursor: c.POINT = undefined;
+        _ = c.GetCursorPos(&cursor);
+        _ = c.ScreenToClient(hwnd, &cursor);
+        const mouse_x = cursor.x;
+        const mouse_y = cursor.y;
 
         const pause_rect = Rect{ .x = 20, .y = 20, .w = 110, .h = 35 };
         const reset_rect = Rect{ .x = 145, .y = 20, .w = 90, .h = 35 };
@@ -650,7 +674,7 @@ pub fn main() !void {
             if (pause_rect.contains(click.x, click.y)) {
                 ui.paused = !ui.paused;
             } else if (reset_rect.contains(click.x, click.y)) {
-                worldReset(&world, allocator);
+                worldReset(&world);
                 tick = 0;
                 ui.selected_place = null;
                 last_step_ms = std.time.milliTimestamp();
@@ -664,16 +688,21 @@ pub fn main() !void {
             last_step_ms += 1000;
         }
 
-        c.XSetForeground(display, gc, white);
-        c.XFillRectangle(display, window, gc, 0, 0, 1200, 800);
-        c.XSetForeground(display, gc, black);
+        const hdc = c.GetDC(hwnd);
+        defer _ = c.ReleaseDC(hwnd, hdc);
 
-        drawButton(display, window, gc, pause_rect, if (ui.paused) "Play" else "Pause", light_gray, black, black);
-        drawButton(display, window, gc, reset_rect, "Reset", light_gray, black, black);
+        var client_rect: c.RECT = undefined;
+        _ = c.GetClientRect(hwnd, &client_rect);
+        const bg = c.CreateSolidBrush(rgb(255, 255, 255));
+        defer _ = c.DeleteObject(bg);
+        _ = c.FillRect(hdc, &client_rect, bg);
+
+        drawButton(hdc, pause_rect, if (ui.paused) "Play" else "Pause", rgb(230, 230, 230));
+        drawButton(hdc, reset_rect, "Reset", rgb(230, 230, 230));
 
         var status_buf: [128]u8 = undefined;
         const status = try std.fmt.bufPrint(&status_buf, "Tick: {d}  Total: {d}", .{ tick, world.totalPeople() });
-        drawText(display, window, gc, 260, 42, status);
+        drawText(hdc, 260, 30, status);
 
         if (ui.selected_place == null) {
             var hovered_place: ?Place = null;
@@ -684,11 +713,11 @@ pub fn main() !void {
                 const rect = Rect{ .x = 20 + col * 360, .y = 120 + row * 110, .w = 330, .h = 90 };
                 const is_hovered = rect.contains(mouse_x, mouse_y);
                 if (is_hovered) hovered_place = place;
-                drawButton(display, window, gc, rect, place.asString(), if (is_hovered) hover_gray else light_gray, black, black);
+                drawButton(hdc, rect, place.asString(), if (is_hovered) rgb(204, 204, 204) else rgb(230, 230, 230));
 
                 var pop_buf: [96]u8 = undefined;
                 const pop_text = try std.fmt.bufPrint(&pop_buf, "Population: {d}/{d}", .{ world.place_population[@intFromEnum(place)], World.place_capacity });
-                drawText(display, window, gc, rect.x + 10, rect.y + 50, pop_text);
+                drawText(hdc, rect.x + 10, rect.y + 45, pop_text);
 
                 if (click_pos) |click| {
                     if (rect.contains(click.x, click.y)) {
@@ -700,33 +729,30 @@ pub fn main() !void {
 
             if (hovered_place) |place| {
                 const panel = Rect{ .x = 760, .y = 120, .w = 400, .h = 130 };
-                c.XSetForeground(display, gc, blue);
-                c.XFillRectangle(display, window, gc, panel.x, panel.y, @as(c_uint, @intCast(panel.w)), @as(c_uint, @intCast(panel.h)));
-                c.XSetForeground(display, gc, black);
-                c.XDrawRectangle(display, window, gc, panel.x, panel.y, @as(c_uint, @intCast(panel.w)), @as(c_uint, @intCast(panel.h)));
-                drawText(display, window, gc, panel.x + 10, panel.y + 30, place.asString());
+                drawButton(hdc, panel, "", rgb(173, 216, 230));
+                drawText(hdc, panel.x + 10, panel.y + 10, place.asString());
 
                 var info_buf: [120]u8 = undefined;
                 const info = try std.fmt.bufPrint(&info_buf, "Population: {d}   Capacity: {d}", .{ world.place_population[@intFromEnum(place)], World.place_capacity });
-                drawText(display, window, gc, panel.x + 10, panel.y + 60, info);
-                drawText(display, window, gc, panel.x + 10, panel.y + 90, "Click a place to inspect details");
+                drawText(hdc, panel.x + 10, panel.y + 40, info);
+                drawText(hdc, panel.x + 10, panel.y + 70, "Click a place to inspect details");
             }
         } else |selected_place| {
-            drawButton(display, window, gc, back_rect, "Back", light_gray, black, black);
-            drawText(display, window, gc, 130, 95, selected_place.asString());
+            drawButton(hdc, back_rect, "Back", rgb(230, 230, 230));
+            drawText(hdc, 130, 80, selected_place.asString());
 
-            drawText(display, window, gc, 20, 140, "People in place:");
-            var y_people: i32 = 165;
+            drawText(hdc, 20, 130, "People in place:");
+            var y_people: i32 = 155;
             for (world.people.items) |person| {
                 if (person.place != selected_place) continue;
                 var person_buf: [220]u8 = undefined;
                 const person_line = try std.fmt.bufPrint(&person_buf, "#{d} {s} {s} ({s})", .{ person.id, person.first_name, person.last_name, person.kind.asString() });
-                drawText(display, window, gc, 30, y_people, person_line);
-                y_people += 20;
+                drawText(hdc, 30, y_people, person_line);
+                y_people += 18;
             }
 
-            drawText(display, window, gc, 620, 140, "Current connections:");
-            var y_conn: i32 = 165;
+            drawText(hdc, 620, 130, "Current connections:");
+            var y_conn: i32 = 155;
             for (world.people.items) |person| {
                 const partner_id = person.connecting_to_id orelse continue;
                 if (person.place != selected_place or person.id >= partner_id) continue;
@@ -734,13 +760,12 @@ pub fn main() !void {
                 if (partner.place != selected_place) continue;
 
                 var conn_buf: [240]u8 = undefined;
-                const conn_line = try std.fmt.bufPrint(&conn_buf, "{s} {s} ↔ {s} {s} ({s})", .{ person.first_name, person.last_name, partner.first_name, partner.last_name, @tagName(person.connection_type.?) });
-                drawText(display, window, gc, 630, y_conn, conn_line);
-                y_conn += 20;
+                const conn_line = try std.fmt.bufPrint(&conn_buf, "{s} {s} <-> {s} {s} ({s})", .{ person.first_name, person.last_name, partner.first_name, partner.last_name, @tagName(person.connection_type.?) });
+                drawText(hdc, 630, y_conn, conn_line);
+                y_conn += 18;
             }
         }
 
-        c.XFlush(display);
         std.Thread.sleep(16 * std.time.ns_per_ms);
     }
 }
