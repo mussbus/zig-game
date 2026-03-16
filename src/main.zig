@@ -197,6 +197,7 @@ const Connection = struct {
     stick_person_id: usize,
     cave_person_id: usize,
     cave_type: CaveType,
+    stick_has_control: bool,
 };
 
 const Person = struct {
@@ -382,6 +383,12 @@ fn caveKinkLevelPtr(levels: *KinkLevels, cave_type: CaveType) *u8 {
         .front => &levels.front,
         .back => &levels.back,
     };
+}
+
+fn controlChance(stick_person: Person, cave_person: Person) f64 {
+    const product = @as(f64, @floatFromInt(stick_person.kinks.control)) *
+        @as(f64, @floatFromInt(cave_person.kinks.submit));
+    return product / 10000.0;
 }
 
 fn personHasStickConnection(person_id: usize, connections: []const Connection) bool {
@@ -610,12 +617,13 @@ fn clearAllConnectionsForPerson(world: *World, person_id: usize) void {
         }
 
         if (stick != null and cave != null) {
-            std.debug.print("Tick: {s} {s} disconnected from {s} {s} ({s}); warm reset to 0\n", .{
+            std.debug.print("Tick: {s} {s} disconnected from {s} {s} ({s}, control {s}); warm reset to 0\n", .{
                 stick.?.first_name,
                 stick.?.last_name,
                 cave.?.first_name,
                 cave.?.last_name,
                 @tagName(connection.cave_type),
+                if (connection.stick_has_control) "yes" else "no",
             });
         }
 
@@ -633,9 +641,9 @@ fn updateConnectionActivity(world: *World, random: std.Random, allocator: std.me
             continue;
         }
 
-        const drain = @as(u16, connection_count) * 5;
-        world.people.items[i].moods.energy = person.moods.energy -| @as(u8, @intCast(@min(drain, 255)));
-        if (world.people.items[i].moods.energy == 0) {
+        const drain = personEnergyDrain(person.id, world.connections.items);
+        world.people.items[i].moods.energy = person.moods.energy -| drain;
+        if (drain > 0 and world.people.items[i].moods.energy == 0) {
             clearAllConnectionsForPerson(world, person.id);
             continue;
         }
@@ -644,6 +652,10 @@ fn updateConnectionActivity(world: *World, random: std.Random, allocator: std.me
             if (findStickConnection(world.connections.items, person.id)) |connection| {
                 const skill = caveSkillLevelPtr(&world.people.items[i].skills, connection.cave_type);
                 skill.* = clampStat(@as(u16, skill.*) + 2);
+
+                if (connection.stick_has_control) {
+                    world.people.items[i].skills.control = clampStat(@as(u16, world.people.items[i].skills.control) + 1);
+                }
 
                 if (random.boolean()) {
                     const kink = caveKinkLevelPtr(&world.people.items[i].kinks, connection.cave_type);
@@ -661,6 +673,16 @@ fn updateConnectionActivity(world: *World, random: std.Random, allocator: std.me
 
                 const skill = caveSkillLevelPtr(&world.people.items[i].skills, cave_type);
                 skill.* = clampStat(@as(u16, skill.*) + (@as(u16, occupancy) * 2));
+
+                var controlled_occupancy: u8 = 0;
+                for (world.connections.items) |connection| {
+                    if (connection.cave_person_id == person.id and connection.cave_type == cave_type and connection.stick_has_control) {
+                        controlled_occupancy += 1;
+                    }
+                }
+                if (controlled_occupancy > 0) {
+                    world.people.items[i].skills.submit = clampStat(@as(u16, world.people.items[i].skills.submit) + controlled_occupancy);
+                }
 
                 if (random.boolean()) {
                     const kink = caveKinkLevelPtr(&world.people.items[i].kinks, cave_type);
@@ -697,20 +719,23 @@ fn updateConnectionActivity(world: *World, random: std.Random, allocator: std.me
             }
 
             const proposal = (try chooseConnectionProposal(person, other, world.connections.items, random, allocator)) orelse continue;
+            const stick = findPersonById(world.people.items, proposal.stick_person_id) orelse continue;
+            const cave = findPersonById(world.people.items, proposal.cave_person_id) orelse continue;
+            const stick_has_control = ownerOwnedPair(person, other) or random.float(f64) < controlChance(stick, cave);
             try world.connections.append(allocator, .{
                 .stick_person_id = proposal.stick_person_id,
                 .cave_person_id = proposal.cave_person_id,
                 .cave_type = proposal.cave_type,
+                .stick_has_control = stick_has_control,
             });
 
-            const stick = findPersonById(world.people.items, proposal.stick_person_id) orelse continue;
-            const cave = findPersonById(world.people.items, proposal.cave_person_id) orelse continue;
-            std.debug.print("Tick: {s} {s} connected to {s} {s} ({s})\n", .{
+            std.debug.print("Tick: {s} {s} connected to {s} {s} ({s}, control {s})\n", .{
                 stick.first_name,
                 stick.last_name,
                 cave.first_name,
                 cave.last_name,
                 @tagName(proposal.cave_type),
+                if (stick_has_control) "yes" else "no",
             });
             break;
         }
@@ -778,6 +803,22 @@ fn findStickConnection(connections: []const Connection, person_id: usize) ?Conne
     }
 
     return null;
+}
+
+fn personEnergyDrain(person_id: usize, connections: []const Connection) u8 {
+    var drain: u16 = 0;
+    for (connections) |connection| {
+        if (connection.stick_person_id == person_id) {
+            drain += 5;
+            continue;
+        }
+
+        if (connection.cave_person_id == person_id and !connection.stick_has_control) {
+            drain += 5;
+        }
+    }
+
+    return @as(u8, @intCast(@min(drain, 255)));
 }
 
 const Rect = struct {
@@ -990,6 +1031,16 @@ fn formatAnatomy(buf: []u8, person: Person, connections: []const Connection) ![]
     });
 }
 
+fn personHasControlledCaveConnection(person_id: usize, connections: []const Connection) bool {
+    for (connections) |connection| {
+        if (connection.cave_person_id == person_id and connection.stick_has_control) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 fn drawPersonTooltip(
     hdc: win.HDC,
     client_rect: win.RECT,
@@ -1052,8 +1103,9 @@ fn drawPersonTooltip(
     y += line_height;
 
     var connection_buf: [160]u8 = undefined;
-    const connection_line = try std.fmt.bufPrint(&connection_buf, "Active connections: {d}", .{
+    const connection_line = try std.fmt.bufPrint(&connection_buf, "Active connections: {d}  Controlled: {s}", .{
         personConnectionCount(person.id, connections),
+        if (personHasControlledCaveConnection(person.id, connections)) "yes" else "no",
     });
     drawTextColored(hdc, tooltip_rect.x + 10, y, connection_line, theme.text);
     y += line_height;
@@ -1235,13 +1287,19 @@ pub fn main() !void {
                 const cave = findPersonById(world.people.items, connection.cave_person_id) orelse continue;
                 if (stick.place != selected_place or cave.place != selected_place) continue;
 
+                var conn_type_buf: [48]u8 = undefined;
+                const conn_type = if (connection.stick_has_control)
+                    try std.fmt.bufPrint(&conn_type_buf, "{s}, control", .{@tagName(connection.cave_type)})
+                else
+                    @tagName(connection.cave_type);
+
                 var conn_buf: [240]u8 = undefined;
                 const conn_line = try std.fmt.bufPrint(&conn_buf, "{s} {s} -> {s} {s} ({s})", .{
                     stick.first_name,
                     stick.last_name,
                     cave.first_name,
                     cave.last_name,
-                    @tagName(connection.cave_type),
+                    conn_type,
                 });
                 drawTextColored(hdc, 630, y_conn, conn_line, theme.text);
                 y_conn += 18;
