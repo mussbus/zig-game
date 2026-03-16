@@ -201,7 +201,6 @@ const Connection = struct {
 };
 
 const ConnectionGroup = struct {
-    stick_person_id: usize,
     cave_person_id: usize,
 };
 
@@ -219,7 +218,7 @@ const Person = struct {
 };
 
 const World = struct {
-    const place_capacity: usize = 25;
+    const place_capacity: usize = 50;
 
     people: std.ArrayList(Person),
     connections: std.ArrayList(Connection),
@@ -1099,14 +1098,13 @@ fn caveTypeLabel(cave_type: CaveType) []const u8 {
 }
 
 fn connectionGroupMatches(group: ConnectionGroup, connection: Connection) bool {
-    return connection.stick_person_id == group.stick_person_id and
-        connection.cave_person_id == group.cave_person_id;
+    return connection.cave_person_id == group.cave_person_id;
 }
 
 fn isConnectionGroupFirstOccurrence(connections: []const Connection, index: usize) bool {
     const target = connections[index];
     for (connections[0..index]) |existing| {
-        if (existing.stick_person_id == target.stick_person_id and existing.cave_person_id == target.cave_person_id) {
+        if (existing.cave_person_id == target.cave_person_id) {
             return false;
         }
     }
@@ -1155,14 +1153,13 @@ fn drawConnectionGroupTooltip(
     connections: []const Connection,
     theme: Theme,
 ) !void {
-    const stick = findPersonById(people, group.stick_person_id) orelse return;
     const cave = findPersonById(people, group.cave_person_id) orelse return;
     const group_count = countConnectionGroup(group, connections);
     const line_height: i32 = 18;
     const padding: i32 = 10;
     const tooltip_w: i32 = 700;
     const header_lines: i32 = 3;
-    const lines_per_connection: i32 = 3;
+    const lines_per_connection: i32 = 4;
     const tooltip_h: i32 = padding * 2 + (header_lines + (@as(i32, group_count) * lines_per_connection)) * line_height;
     const tooltip_x = clampI32(mouse_x + 18, 10, client_rect.right - tooltip_w - 10);
     const tooltip_y = clampI32(mouse_y + 18, 10, client_rect.bottom - tooltip_h - 10);
@@ -1173,25 +1170,21 @@ fn drawConnectionGroupTooltip(
     var y = tooltip_rect.y + padding;
 
     var title_buf: [160]u8 = undefined;
-    const title_line = try std.fmt.bufPrint(&title_buf, "{s} {s} -> {s} {s}", .{
-        stick.first_name,
-        stick.last_name,
+    const title_line = try std.fmt.bufPrint(&title_buf, "Cave target: {s} {s} ({s})", .{
         cave.first_name,
         cave.last_name,
+        cave.kind.asString(),
     });
     drawTextColored(hdc, tooltip_rect.x + padding, y, title_line, theme.text);
     y += line_height;
 
     var summary_buf: [160]u8 = undefined;
-    const summary_line = try std.fmt.bufPrint(&summary_buf, "Grouped connections: {d}", .{group_count});
+    const summary_line = try std.fmt.bufPrint(&summary_buf, "Incoming stick-cave connections: {d}", .{group_count});
     drawTextColored(hdc, tooltip_rect.x + padding, y, summary_line, theme.text);
     y += line_height;
 
-    var mood_buf: [256]u8 = undefined;
-    const mood_line = try std.fmt.bufPrint(&mood_buf, "Moods  stick W/E/H {d}/{d}/{d}  cave W/E/H {d}/{d}/{d}", .{
-        stick.moods.warm,
-        stick.moods.energy,
-        stick.moods.happiness,
+    var mood_buf: [192]u8 = undefined;
+    const mood_line = try std.fmt.bufPrint(&mood_buf, "Cave moods  W/E/H {d}/{d}/{d}", .{
         cave.moods.warm,
         cave.moods.energy,
         cave.moods.happiness,
@@ -1202,14 +1195,29 @@ fn drawConnectionGroupTooltip(
     var connection_index: u8 = 1;
     for (connections) |connection| {
         if (!connectionGroupMatches(group, connection)) continue;
+        const stick = findPersonById(people, connection.stick_person_id) orelse continue;
 
-        var type_buf: [192]u8 = undefined;
-        const type_line = try std.fmt.bufPrint(&type_buf, "#{d} {s}  control {s}", .{
+        var type_buf: [256]u8 = undefined;
+        const type_line = try std.fmt.bufPrint(&type_buf, "#{d} {s} {s} -> cave {s}  control {s}", .{
             connection_index,
+            stick.first_name,
+            stick.last_name,
             caveTypeLabel(connection.cave_type),
             if (connection.stick_has_control) "yes" else "no",
         });
         drawTextColored(hdc, tooltip_rect.x + padding, y, type_line, theme.text);
+        y += line_height;
+
+        var connection_mood_buf: [256]u8 = undefined;
+        const connection_mood_line = try std.fmt.bufPrint(&connection_mood_buf, "Moods   stick W/E/H {d}/{d}/{d}  cave W/E/H {d}/{d}/{d}", .{
+            stick.moods.warm,
+            stick.moods.energy,
+            stick.moods.happiness,
+            cave.moods.warm,
+            cave.moods.energy,
+            cave.moods.happiness,
+        });
+        drawTextColored(hdc, tooltip_rect.x + padding, y, connection_mood_line, theme.text);
         y += line_height;
 
         var skill_buf: [320]u8 = undefined;
@@ -1487,9 +1495,9 @@ pub fn main() !void {
                 const stick = findPersonById(world.people.items, connection.stick_person_id) orelse continue;
                 const cave = findPersonById(world.people.items, connection.cave_person_id) orelse continue;
                 if (stick.place != selected_place or cave.place != selected_place) continue;
+                if (cave.kind == .male) continue;
 
                 const group = ConnectionGroup{
-                    .stick_person_id = connection.stick_person_id,
                     .cave_person_id = connection.cave_person_id,
                 };
                 const connection_rect = Rect{ .x = 624, .y = y_conn - 2, .w = 520, .h = 18 };
@@ -1502,13 +1510,15 @@ pub fn main() !void {
                     fillRectColor(hdc, connection_rect, theme.button_hover);
                 }
 
-                var conn_buf: [256]u8 = undefined;
-                const conn_line = try std.fmt.bufPrint(&conn_buf, "{s} {s} -> {s} {s} ({d} grouped)", .{
-                    stick.first_name,
-                    stick.last_name,
+                var conn_buf: [320]u8 = undefined;
+                const conn_line = try std.fmt.bufPrint(&conn_buf, "{s} {s} ({s}) | connections {d} | W/E/H {d}/{d}/{d}", .{
                     cave.first_name,
                     cave.last_name,
+                    cave.kind.asString(),
                     countConnectionGroup(group, world.connections.items),
+                    cave.moods.warm,
+                    cave.moods.energy,
+                    cave.moods.happiness,
                 });
                 drawTextColored(hdc, 630, y_conn, conn_line, theme.text);
                 y_conn += 18;
