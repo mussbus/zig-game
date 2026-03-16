@@ -632,6 +632,17 @@ fn clearAllConnectionsForPerson(world: *World, person_id: usize) void {
 }
 
 fn updateConnectionActivity(world: *World, random: std.Random, allocator: std.mem.Allocator) !void {
+    for (world.connections.items) |connection| {
+        const stick_index = findPersonIndexById(world.people.items, connection.stick_person_id) orelse continue;
+        const cave_index = findPersonIndexById(world.people.items, connection.cave_person_id) orelse continue;
+
+        world.people.items[stick_index].moods.energy = world.people.items[stick_index].moods.energy -| 3;
+        world.people.items[cave_index].moods.energy = world.people.items[cave_index].moods.energy -| 3;
+
+        increaseConnectionHappiness(world, stick_index, cave_index);
+        increaseConnectionHappiness(world, cave_index, stick_index);
+    }
+
     for (world.people.items, 0..) |person, i| {
         const connection_count = personConnectionCount(person.id, world.connections.items);
         if (connection_count == 0) {
@@ -641,9 +652,7 @@ fn updateConnectionActivity(world: *World, random: std.Random, allocator: std.me
             continue;
         }
 
-        const drain = personEnergyDrain(person.id, world.connections.items);
-        world.people.items[i].moods.energy = person.moods.energy -| drain;
-        if (drain > 0 and world.people.items[i].moods.energy == 0) {
+        if (personEndsConnectionsFromEnergy(person.id, world.connections.items) and world.people.items[i].moods.energy == 0) {
             clearAllConnectionsForPerson(world, person.id);
             continue;
         }
@@ -805,20 +814,31 @@ fn findStickConnection(connections: []const Connection, person_id: usize) ?Conne
     return null;
 }
 
-fn personEnergyDrain(person_id: usize, connections: []const Connection) u8 {
-    var drain: u16 = 0;
+fn increaseConnectionHappiness(world: *World, primary_index: usize, other_index: usize) void {
+    const boosted = clampStat(@as(u16, world.people.items[primary_index].moods.happiness) + 10);
+    world.people.items[primary_index].moods.happiness = boosted;
+
+    if (boosted < 100) {
+        return;
+    }
+
+    world.people.items[primary_index].moods.happiness = 0;
+    world.people.items[primary_index].moods.happiness = clampStat(@as(u16, world.people.items[primary_index].moods.happiness) + 10);
+    world.people.items[other_index].moods.happiness = clampStat(@as(u16, world.people.items[other_index].moods.happiness) + 10);
+}
+
+fn personEndsConnectionsFromEnergy(person_id: usize, connections: []const Connection) bool {
     for (connections) |connection| {
         if (connection.stick_person_id == person_id) {
-            drain += 5;
-            continue;
+            return true;
         }
 
         if (connection.cave_person_id == person_id and !connection.stick_has_control) {
-            drain += 5;
+            return true;
         }
     }
 
-    return @as(u8, @intCast(@min(drain, 255)));
+    return false;
 }
 
 const Rect = struct {
