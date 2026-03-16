@@ -60,13 +60,21 @@ const KinkLevels = struct {
     control: u8,
 };
 
+const SkillLevels = struct {
+    top: u8,
+    front: u8,
+    back: u8,
+    stamina: u8,
+};
+
 const Person = struct {
     id: usize,
     kind: PersonType,
     place: Place,
     moods: MoodLevels,
     kinks: KinkLevels,
-    owned: bool,
+    skills: SkillLevels,
+    owned_by_id: ?usize,
 };
 
 const World = struct {
@@ -145,6 +153,50 @@ fn randomKinkLevels(random: std.Random) KinkLevels {
     };
 }
 
+fn randomSkillLevels(random: std.Random) SkillLevels {
+    return .{
+        .top = randomLevel(random),
+        .front = randomLevel(random),
+        .back = randomLevel(random),
+        .stamina = randomLevel(random),
+    };
+}
+
+fn ownerCanOwn(owner_kind: PersonType, owned_kind: PersonType) bool {
+    return switch (owned_kind) {
+        .male => false,
+        .female => owner_kind == .male or owner_kind == .futa,
+        .futa => owner_kind == .male,
+    };
+}
+
+fn randomOwnedById(owned_kind: PersonType, people: []const Person, random: std.Random) ?usize {
+    if (owned_kind == .male) {
+        return null;
+    }
+
+    // Only 25% of eligible people should be owned.
+    if (random.uintLessThan(u8, 4) != 0) {
+        return null;
+    }
+
+    var candidate_count: usize = 0;
+    var selected_owner_id: ?usize = null;
+
+    for (people) |person| {
+        if (!ownerCanOwn(person.kind, owned_kind)) {
+            continue;
+        }
+
+        candidate_count += 1;
+        if (random.uintLessThan(usize, candidate_count) == 0) {
+            selected_owner_id = person.id;
+        }
+    }
+
+    return selected_owner_id;
+}
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer {
@@ -166,19 +218,21 @@ pub fn main() !void {
     std.debug.print("Starting world simulation (1 new person/second). Press Ctrl+C to stop.\n", .{});
 
     while (true) {
+        const kind = randomPersonType(random);
         const new_person = Person{
             .id = world.totalPeople() + 1,
-            .kind = randomPersonType(random),
+            .kind = kind,
             .place = randomPlace(random),
             .moods = randomMoodLevels(random),
             .kinks = randomKinkLevels(random),
-            .owned = random.boolean(),
+            .skills = randomSkillLevels(random),
+            .owned_by_id = randomOwnedById(kind, world.people.items, random),
         };
 
         try world.addPerson(new_person);
 
         std.debug.print(
-            "Tick: created person #{d} ({s}) at {s} [moods: warm={d}, energy={d}, happiness={d}; kinks: top={d}, front={d}, back={d}, wet={d}, covered={d}, deep={d}, rough={d}, submit={d}, control={d}; owned={s}]\nTotal={d} [male={d}, female={d}, futa={d}]\n\n",
+            "Tick: created person #{d} ({s}) at {s} [moods: warm={d}, energy={d}, happiness={d}; skills: top={d}, front={d}, back={d}, stamina={d}; kinks: top={d}, front={d}, back={d}, wet={d}, covered={d}, deep={d}, rough={d}, submit={d}, control={d}; owned_by_id={any}]\nTotal={d} [male={d}, female={d}, futa={d}]\n\n",
             .{
                 new_person.id,
                 new_person.kind.asString(),
@@ -186,6 +240,10 @@ pub fn main() !void {
                 new_person.moods.warm,
                 new_person.moods.energy,
                 new_person.moods.happiness,
+                new_person.skills.top,
+                new_person.skills.front,
+                new_person.skills.back,
+                new_person.skills.stamina,
                 new_person.kinks.top,
                 new_person.kinks.front,
                 new_person.kinks.back,
@@ -195,7 +253,7 @@ pub fn main() !void {
                 new_person.kinks.rough,
                 new_person.kinks.submit,
                 new_person.kinks.control,
-                if (new_person.owned) "yes" else "no",
+                new_person.owned_by_id,
                 world.totalPeople(),
                 world.male_count,
                 world.female_count,
