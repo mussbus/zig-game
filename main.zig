@@ -42,10 +42,31 @@ const PersonType = enum(u8) {
     }
 };
 
+const MoodLevels = struct {
+    warm: u8,
+    energy: u8,
+    happiness: u8,
+};
+
+const KinkLevels = struct {
+    top: u8,
+    front: u8,
+    back: u8,
+    wet: u8,
+    covered: u8,
+    deep: u8,
+    rough: u8,
+    submit: u8,
+    control: u8,
+};
+
 const Person = struct {
     id: usize,
     kind: PersonType,
     place: Place,
+    moods: MoodLevels,
+    kinks: KinkLevels,
+    owned: bool,
 };
 
 const World = struct {
@@ -98,6 +119,32 @@ fn randomPlace(random: std.Random) Place {
     return @enumFromInt(random.uintLessThan(u8, 10));
 }
 
+fn randomLevel(random: std.Random) u8 {
+    return random.uintLessThan(u8, 101);
+}
+
+fn randomMoodLevels(random: std.Random) MoodLevels {
+    return .{
+        .warm = randomLevel(random),
+        .energy = randomLevel(random),
+        .happiness = randomLevel(random),
+    };
+}
+
+fn randomKinkLevels(random: std.Random) KinkLevels {
+    return .{
+        .top = randomLevel(random),
+        .front = randomLevel(random),
+        .back = randomLevel(random),
+        .wet = randomLevel(random),
+        .covered = randomLevel(random),
+        .deep = randomLevel(random),
+        .rough = randomLevel(random),
+        .submit = randomLevel(random),
+        .control = randomLevel(random),
+    };
+}
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer {
@@ -123,16 +170,32 @@ pub fn main() !void {
             .id = world.totalPeople() + 1,
             .kind = randomPersonType(random),
             .place = randomPlace(random),
+            .moods = randomMoodLevels(random),
+            .kinks = randomKinkLevels(random),
+            .owned = random.boolean(),
         };
 
         try world.addPerson(new_person);
 
         std.debug.print(
-            "Tick: created person #{d} ({s}) at {s}\nTotal={d} [male={d}, female={d}, futa={d}]\n\n",
+            "Tick: created person #{d} ({s}) at {s} [moods: warm={d}, energy={d}, happiness={d}; kinks: top={d}, front={d}, back={d}, wet={d}, covered={d}, deep={d}, rough={d}, submit={d}, control={d}; owned={s}]\nTotal={d} [male={d}, female={d}, futa={d}]\n\n",
             .{
                 new_person.id,
                 new_person.kind.asString(),
                 new_person.place.asString(),
+                new_person.moods.warm,
+                new_person.moods.energy,
+                new_person.moods.happiness,
+                new_person.kinks.top,
+                new_person.kinks.front,
+                new_person.kinks.back,
+                new_person.kinks.wet,
+                new_person.kinks.covered,
+                new_person.kinks.deep,
+                new_person.kinks.rough,
+                new_person.kinks.submit,
+                new_person.kinks.control,
+                if (new_person.owned) "yes" else "no",
                 world.totalPeople(),
                 world.male_count,
                 world.female_count,
