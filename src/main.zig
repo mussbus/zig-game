@@ -114,8 +114,8 @@ const male_first_names = [_][]const u8{
 };
 
 const female_first_names = [_][]const u8{
-    "Mary", "Patricia", "Jennifer", "Linda", "Elizabeth",
-    "Barbara", "Susan", "Jessica", "Sarah", "Karen",
+    "Nicole", "Mia", "Jennifer", "Lena", "Elizabeth",
+    "Paige", "Emma", "Alexis", "Sarah", "Lana",
 };
 
 const last_names = [_][]const u8{
@@ -1244,10 +1244,6 @@ fn drawConnectionGroupTooltip(
 
         drawTextColored(hdc, tooltip_rect.x + padding, y, "Stick moods", theme.text);
         drawMoodTriplet(hdc, tooltip_rect.x + padding + 96, y, stick.moods, theme);
-        y += line_height;
-
-        drawTextColored(hdc, tooltip_rect.x + padding, y, "Cave moods", theme.text);
-        drawMoodTriplet(hdc, tooltip_rect.x + padding + 96, y, cave.moods, theme);
         y += line_height;
 
         var skill_buf: [320]u8 = undefined;
