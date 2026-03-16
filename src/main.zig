@@ -317,13 +317,20 @@ fn clearConnection(people: []Person, person_index: usize) void {
         people[person_index].connection_type = null;
         return;
     };
+    const person_id = people[person_index].id;
+    people[person_index].moods.warm = 0;
     people[person_index].connecting_to_id = null;
     people[person_index].connection_type = null;
 
+    std.debug.print("Tick: person #{d} finished connecting with person #{d}; warm reset to 0\n", .{ person_id, partner_id });
+
     for (people, 0..) |*other, other_index| {
         if (other_index != person_index and other.id == partner_id) {
+            other.moods.warm = 0;
             other.connecting_to_id = null;
             other.connection_type = null;
+
+            std.debug.print("Tick: person #{d} finished connecting with person #{d}; warm reset to 0\n", .{ partner_id, person_id });
             break;
         }
     }
@@ -368,6 +375,8 @@ fn updateConnectionActivity(world: *World, random: std.Random) void {
                 continue;
             }
 
+            std.debug.print("Tick: person #{d} is connecting with person #{d}\n", .{ person.id, other.id });
+
             const should_connect = if (ownerOwnedPair(person, other))
                 true
             else blk: {
@@ -385,6 +394,7 @@ fn updateConnectionActivity(world: *World, random: std.Random) void {
             world.people.items[j].connecting_to_id = person.id;
             world.people.items[i].connection_type = connection_type;
             world.people.items[j].connection_type = connection_type;
+            std.debug.print("Tick: person #{d} connected with person #{d} ({s})\n", .{ person.id, other.id, @tagName(connection_type) });
             break;
         }
     }
