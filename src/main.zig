@@ -103,9 +103,9 @@ const World = struct {
     female_count: usize,
     futa_count: usize,
 
-    pub fn init(allocator: std.mem.Allocator) World {
+    pub fn init() World {
         return .{
-            .people = std.ArrayList(Person).init(allocator),
+            .people = .{},
             .place_population = [_]usize{0} ** 10,
             .male_count = 0,
             .female_count = 0,
@@ -113,12 +113,12 @@ const World = struct {
         };
     }
 
-    pub fn deinit(self: *World) void {
-        self.people.deinit();
+    pub fn deinit(self: *World, allocator: std.mem.Allocator) void {
+        self.people.deinit(allocator);
     }
 
-    pub fn addPerson(self: *World, person: Person) !void {
-        try self.people.append(person);
+    pub fn addPerson(self: *World, person: Person, allocator: std.mem.Allocator) !void {
+        try self.people.append(allocator, person);
 
         switch (person.kind) {
             .male => self.male_count += 1,
@@ -439,8 +439,8 @@ pub fn main() !void {
     }
 
     const allocator = gpa.allocator();
-    var world = World.init(allocator);
-    defer world.deinit();
+    var world = World.init();
+    defer world.deinit(allocator);
 
     var seed: u64 = undefined;
     try std.posix.getrandom(std.mem.asBytes(&seed));
@@ -466,7 +466,7 @@ pub fn main() !void {
             .connection_type = null,
         };
 
-        try world.addPerson(new_person);
+        try world.addPerson(new_person, allocator);
 
         std.debug.print(
             "Tick: created person #{d} ({s}) at {s} [moods: warm={d}, energy={d}, happiness={d}; skills: top={d}, front={d}, back={d}, wet={d}, covered={d}, deep={d}, rough={d}, submit={d}, control={d}; kinks: top={d}, front={d}, back={d}, wet={d}, covered={d}, deep={d}, rough={d}, submit={d}, control={d}; owned_by_id={any}]\nTotal={d} [male={d}, female={d}, futa={d}]\n\n",
@@ -507,6 +507,6 @@ pub fn main() !void {
             updateConnectionActivity(&world, random);
         }
 
-        std.time.sleep(std.time.ns_per_s);
+        std.Thread.sleep(std.time.ns_per_s);
     }
 }
