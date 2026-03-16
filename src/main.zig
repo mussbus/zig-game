@@ -1,4 +1,15 @@
 const std = @import("std");
+const builtin = @import("builtin");
+
+comptime {
+    if (builtin.os.tag != .windows) {
+        @compileError("This UI build targets Windows only.");
+    }
+}
+
+const c = @cImport({
+    @cInclude("windows.h");
+});
 
 const male_first_names = [_][]const u8{
     "James", "John", "Robert", "Michael", "David",
@@ -479,6 +490,107 @@ fn randomOwnedById(owned_kind: PersonType, owned_place: Place, people: []const P
     return selected_owner_id;
 }
 
+const Rect = struct {
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+
+    fn contains(self: Rect, px: i32, py: i32) bool {
+        return px >= self.x and px < self.x + self.w and py >= self.y and py < self.y + self.h;
+    }
+};
+
+const UiState = struct {
+    paused: bool = false,
+    selected_place: ?Place = null,
+};
+
+fn worldReset(world: *World) void {
+    world.people.clearRetainingCapacity();
+    world.place_population = [_]usize{0} ** 10;
+    world.male_count = 0;
+    world.female_count = 0;
+    world.futa_count = 0;
+}
+
+fn stepSimulation(world: *World, tick: *u64, random: std.Random, allocator: std.mem.Allocator) !void {
+    tick.* += 1;
+    const kind = randomPersonType(random);
+    const place = randomPlace(random);
+    const new_person = Person{
+        .id = world.totalPeople() + 1,
+        .first_name = randomFirstName(kind, random),
+        .last_name = randomLastName(random),
+        .kind = kind,
+        .place = place,
+        .moods = randomMoodLevels(random),
+        .kinks = randomKinkLevels(random),
+        .skills = randomSkillLevels(random),
+        .owned_by_id = randomOwnedById(kind, place, world.people.items, random),
+        .connecting_to_id = null,
+        .connection_type = null,
+    };
+
+    _ = try world.addPerson(new_person, allocator);
+    if (tick.* % 10 == 0) {
+        updateConnectionActivity(world, random);
+    }
+}
+
+fn findPersonById(people: []const Person, person_id: usize) ?Person {
+    for (people) |person| {
+        if (person.id == person_id) return person;
+    }
+    return null;
+}
+
+fn rgb(r: u8, g: u8, b: u8) c.COLORREF {
+    return @as(c.COLORREF, r) | (@as(c.COLORREF, g) << 8) | (@as(c.COLORREF, b) << 16);
+}
+
+fn toWinRect(rect: Rect) c.RECT {
+    return .{
+        .left = rect.x,
+        .top = rect.y,
+        .right = rect.x + rect.w,
+        .bottom = rect.y + rect.h,
+    };
+}
+
+fn fillRectColor(hdc: c.HDC, rect: Rect, color: c.COLORREF) void {
+    const brush = c.CreateSolidBrush(color);
+    defer _ = c.DeleteObject(brush);
+    var win_rect = toWinRect(rect);
+    _ = c.FillRect(hdc, &win_rect, brush);
+}
+
+fn drawText(hdc: c.HDC, x: i32, y: i32, text: []const u8) void {
+    _ = c.TextOutA(hdc, x, y, text.ptr, @as(c_int, @intCast(text.len)));
+}
+
+fn drawButton(hdc: c.HDC, rect: Rect, label: []const u8, fill: c.COLORREF) void {
+    fillRectColor(hdc, rect, fill);
+
+    const border_brush = c.GetStockObject(c.BLACK_BRUSH);
+    var border_rect = toWinRect(rect);
+    _ = c.FrameRect(hdc, &border_rect, @ptrCast(border_brush));
+
+    _ = c.SetTextColor(hdc, rgb(0, 0, 0));
+    _ = c.SetBkMode(hdc, c.TRANSPARENT);
+    drawText(hdc, rect.x + 10, rect.y + 10, label);
+}
+
+fn wndProc(hwnd: c.HWND, msg: c.UINT, w_param: c.WPARAM, l_param: c.LPARAM) callconv(.c) c.LRESULT {
+    switch (msg) {
+        c.WM_DESTROY => {
+            c.PostQuitMessage(0);
+            return 0;
+        },
+        else => return c.DefWindowProcA(hwnd, msg, w_param, l_param),
+    }
+}
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer {
@@ -492,86 +604,168 @@ pub fn main() !void {
     var world = World.init();
     defer world.deinit(allocator);
 
+    const h_instance = c.GetModuleHandleA(null);
+    var wc: c.WNDCLASSA = std.mem.zeroes(c.WNDCLASSA);
+    wc.style = c.CS_HREDRAW | c.CS_VREDRAW;
+    wc.lpfnWndProc = wndProc;
+    wc.hInstance = h_instance;
+    wc.lpszClassName = "ZigGameWindowClass";
+    wc.hCursor = c.LoadCursorA(null, c.IDC_ARROW);
+
+    if (c.RegisterClassA(&wc) == 0) return error.RegisterClassFailed;
+
+    const hwnd = c.CreateWindowExA(
+        0,
+        wc.lpszClassName,
+        "Zig World UI",
+        c.WS_OVERLAPPEDWINDOW | c.WS_VISIBLE,
+        c.CW_USEDEFAULT,
+        c.CW_USEDEFAULT,
+        1200,
+        800,
+        null,
+        null,
+        h_instance,
+        null,
+    ) orelse return error.WindowCreateFailed;
+
     var seed: u64 = undefined;
     try std.posix.getrandom(std.mem.asBytes(&seed));
     var prng = std.Random.DefaultPrng.init(seed);
     const random = prng.random();
 
-    std.debug.print("Starting world simulation (1 new person/second). Press Ctrl+C to stop.\n", .{});
-
+    var ui = UiState{};
     var tick: u64 = 0;
-    while (true) {
-        tick += 1;
-        const kind = randomPersonType(random);
-        const place = randomPlace(random);
-        const new_person = Person{
-            .id = world.totalPeople() + 1,
-            .first_name = randomFirstName(kind, random),
-            .last_name = randomLastName(random),
-            .kind = kind,
-            .place = place,
-            .moods = randomMoodLevels(random),
-            .kinks = randomKinkLevels(random),
-            .skills = randomSkillLevels(random),
-            .owned_by_id = randomOwnedById(kind, place, world.people.items, random),
-            .connecting_to_id = null,
-            .connection_type = null,
-        };
+    var last_step_ms = std.time.milliTimestamp();
+    var should_quit = false;
 
-        const spawned = try world.addPerson(new_person, allocator);
-        if (!spawned) {
-            // std.debug.print(
-            //     "Tick: skipped spawning {s} {s} ({s}) at {s}; place is at capacity ({d})\n",
-            //     .{
-            //         new_person.first_name,
-            //         new_person.last_name,
-            //         new_person.kind.asString(),
-            //         new_person.place.asString(),
-            //         World.place_capacity,
-            //     },
-            // );
+    while (!should_quit) {
+        var msg: c.MSG = undefined;
+        var click_pos: ?struct { x: i32, y: i32 } = null;
+
+        while (c.PeekMessageA(&msg, null, 0, 0, c.PM_REMOVE) != 0) {
+            if (msg.message == c.WM_QUIT) {
+                should_quit = true;
+                break;
+            }
+
+            if (msg.message == c.WM_LBUTTONDOWN) {
+                var cursor: c.POINT = undefined;
+                _ = c.GetCursorPos(&cursor);
+                _ = c.ScreenToClient(hwnd, &cursor);
+                click_pos = .{ .x = cursor.x, .y = cursor.y };
+            }
+
+            _ = c.TranslateMessage(&msg);
+            _ = c.DispatchMessageA(&msg);
         }
 
-        // std.debug.print(
-        //     "Tick: created {s} {s} ({s}) at {s} [moods: warm={d}, energy={d}, happiness={d}; skills: top={d}, front={d}, back={d}, wet={d}, covered={d}, deep={d}, rough={d}, submit={d}, control={d}; kinks: top={d}, front={d}, back={d}, wet={d}, covered={d}, deep={d}, rough={d}, submit={d}, control={d}; owned_by_id={any}]\nTotal={d} [male={d}, female={d}, futa={d}]\n\n",
-        //     .{
-        //         new_person.first_name,
-        //         new_person.last_name,
-        //         new_person.kind.asString(),
-        //         new_person.place.asString(),
-        //         new_person.moods.warm,
-        //         new_person.moods.energy,
-        //         new_person.moods.happiness,
-        //         new_person.skills.top,
-        //         new_person.skills.front,
-        //         new_person.skills.back,
-        //         new_person.skills.wet,
-        //         new_person.skills.covered,
-        //         new_person.skills.deep,
-        //         new_person.skills.rough,
-        //         new_person.skills.submit,
-        //         new_person.skills.control,
-        //         new_person.kinks.top,
-        //         new_person.kinks.front,
-        //         new_person.kinks.back,
-        //         new_person.kinks.wet,
-        //         new_person.kinks.covered,
-        //         new_person.kinks.deep,
-        //         new_person.kinks.rough,
-        //         new_person.kinks.submit,
-        //         new_person.kinks.control,
-        //         new_person.owned_by_id,
-        //         world.totalPeople(),
-        //         world.male_count,
-        //         world.female_count,
-        //         world.futa_count,
-        //     },
-        // );
+        var cursor: c.POINT = undefined;
+        _ = c.GetCursorPos(&cursor);
+        _ = c.ScreenToClient(hwnd, &cursor);
+        const mouse_x = cursor.x;
+        const mouse_y = cursor.y;
 
-        if (tick % 10 == 0) {
-            updateConnectionActivity(&world, random);
+        const pause_rect = Rect{ .x = 20, .y = 20, .w = 110, .h = 35 };
+        const reset_rect = Rect{ .x = 145, .y = 20, .w = 90, .h = 35 };
+        const back_rect = Rect{ .x = 20, .y = 70, .w = 90, .h = 35 };
+
+        if (click_pos) |click| {
+            if (pause_rect.contains(click.x, click.y)) {
+                ui.paused = !ui.paused;
+            } else if (reset_rect.contains(click.x, click.y)) {
+                worldReset(&world);
+                tick = 0;
+                ui.selected_place = null;
+                last_step_ms = std.time.milliTimestamp();
+            } else if (ui.selected_place != null and back_rect.contains(click.x, click.y)) {
+                ui.selected_place = null;
+            }
         }
 
-        std.Thread.sleep(std.time.ns_per_s);
+        if (!ui.paused and std.time.milliTimestamp() - last_step_ms >= 1000) {
+            try stepSimulation(&world, &tick, random, allocator);
+            last_step_ms += 1000;
+        }
+
+        const hdc = c.GetDC(hwnd);
+        defer _ = c.ReleaseDC(hwnd, hdc);
+
+        var client_rect: c.RECT = undefined;
+        _ = c.GetClientRect(hwnd, &client_rect);
+        const bg = c.CreateSolidBrush(rgb(255, 255, 255));
+        defer _ = c.DeleteObject(bg);
+        _ = c.FillRect(hdc, &client_rect, bg);
+
+        drawButton(hdc, pause_rect, if (ui.paused) "Play" else "Pause", rgb(230, 230, 230));
+        drawButton(hdc, reset_rect, "Reset", rgb(230, 230, 230));
+
+        var status_buf: [128]u8 = undefined;
+        const status = try std.fmt.bufPrint(&status_buf, "Tick: {d}  Total: {d}", .{ tick, world.totalPeople() });
+        drawText(hdc, 260, 30, status);
+
+        if (ui.selected_place == null) {
+            var hovered_place: ?Place = null;
+            var place_index: usize = 0;
+            for (std.enums.values(Place)) |place| {
+                const col = @as(i32, @intCast(place_index % 2));
+                const row = @as(i32, @intCast(place_index / 2));
+                const rect = Rect{ .x = 20 + col * 360, .y = 120 + row * 110, .w = 330, .h = 90 };
+                const is_hovered = rect.contains(mouse_x, mouse_y);
+                if (is_hovered) hovered_place = place;
+                drawButton(hdc, rect, place.asString(), if (is_hovered) rgb(204, 204, 204) else rgb(230, 230, 230));
+
+                var pop_buf: [96]u8 = undefined;
+                const pop_text = try std.fmt.bufPrint(&pop_buf, "Population: {d}/{d}", .{ world.place_population[@intFromEnum(place)], World.place_capacity });
+                drawText(hdc, rect.x + 10, rect.y + 45, pop_text);
+
+                if (click_pos) |click| {
+                    if (rect.contains(click.x, click.y)) {
+                        ui.selected_place = place;
+                    }
+                }
+                place_index += 1;
+            }
+
+            if (hovered_place) |place| {
+                const panel = Rect{ .x = 760, .y = 120, .w = 400, .h = 130 };
+                drawButton(hdc, panel, "", rgb(173, 216, 230));
+                drawText(hdc, panel.x + 10, panel.y + 10, place.asString());
+
+                var info_buf: [120]u8 = undefined;
+                const info = try std.fmt.bufPrint(&info_buf, "Population: {d}   Capacity: {d}", .{ world.place_population[@intFromEnum(place)], World.place_capacity });
+                drawText(hdc, panel.x + 10, panel.y + 40, info);
+                drawText(hdc, panel.x + 10, panel.y + 70, "Click a place to inspect details");
+            }
+        } else |selected_place| {
+            drawButton(hdc, back_rect, "Back", rgb(230, 230, 230));
+            drawText(hdc, 130, 80, selected_place.asString());
+
+            drawText(hdc, 20, 130, "People in place:");
+            var y_people: i32 = 155;
+            for (world.people.items) |person| {
+                if (person.place != selected_place) continue;
+                var person_buf: [220]u8 = undefined;
+                const person_line = try std.fmt.bufPrint(&person_buf, "#{d} {s} {s} ({s})", .{ person.id, person.first_name, person.last_name, person.kind.asString() });
+                drawText(hdc, 30, y_people, person_line);
+                y_people += 18;
+            }
+
+            drawText(hdc, 620, 130, "Current connections:");
+            var y_conn: i32 = 155;
+            for (world.people.items) |person| {
+                const partner_id = person.connecting_to_id orelse continue;
+                if (person.place != selected_place or person.id >= partner_id) continue;
+                const partner = findPersonById(world.people.items, partner_id) orelse continue;
+                if (partner.place != selected_place) continue;
+
+                var conn_buf: [240]u8 = undefined;
+                const conn_line = try std.fmt.bufPrint(&conn_buf, "{s} {s} <-> {s} {s} ({s})", .{ person.first_name, person.last_name, partner.first_name, partner.last_name, @tagName(person.connection_type.?) });
+                drawText(hdc, 630, y_conn, conn_line);
+                y_conn += 18;
+            }
+        }
+
+        std.Thread.sleep(16 * std.time.ns_per_ms);
     }
 }
