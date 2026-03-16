@@ -203,6 +203,7 @@ const Person = struct {
     id: usize,
     first_name: []const u8,
     last_name: []const u8,
+    age: u8,
     kind: PersonType,
     place: Place,
     moods: MoodLevels,
@@ -278,6 +279,10 @@ fn randomFirstName(kind: PersonType, random: std.Random) []const u8 {
 
 fn randomLastName(random: std.Random) []const u8 {
     return last_names[random.uintLessThan(usize, last_names.len)];
+}
+
+fn randomAge(random: std.Random) u8 {
+    return 14 + random.uintLessThan(u8, 37);
 }
 
 fn randomPlace(random: std.Random) Place {
@@ -592,8 +597,40 @@ const Rect = struct {
 
 const UiState = struct {
     paused: bool = false,
+    dark_mode: bool = false,
     selected_place: ?Place = null,
 };
+
+const Theme = struct {
+    background: win.COLORREF,
+    button: win.COLORREF,
+    button_hover: win.COLORREF,
+    panel: win.COLORREF,
+    text: win.COLORREF,
+    border: win.COLORREF,
+};
+
+fn currentTheme(dark_mode: bool) Theme {
+    if (dark_mode) {
+        return .{
+            .background = rgb(24, 28, 35),
+            .button = rgb(58, 66, 78),
+            .button_hover = rgb(82, 92, 108),
+            .panel = rgb(36, 46, 60),
+            .text = rgb(235, 239, 244),
+            .border = rgb(112, 122, 138),
+        };
+    }
+
+    return .{
+        .background = rgb(255, 255, 255),
+        .button = rgb(230, 230, 230),
+        .button_hover = rgb(204, 204, 204),
+        .panel = rgb(173, 216, 230),
+        .text = rgb(0, 0, 0),
+        .border = rgb(0, 0, 0),
+    };
+}
 
 fn worldReset(world: *World) void {
     world.people.clearRetainingCapacity();
@@ -611,6 +648,7 @@ fn stepSimulation(world: *World, tick: *u64, random: std.Random, allocator: std.
         .id = world.totalPeople() + 1,
         .first_name = randomFirstName(kind, random),
         .last_name = randomLastName(random),
+        .age = randomAge(random),
         .kind = kind,
         .place = place,
         .moods = randomMoodLevels(random),
@@ -658,16 +696,24 @@ fn drawText(hdc: win.HDC, x: i32, y: i32, text: []const u8) void {
     _ = win.TextOutA(hdc, x, y, text.ptr, @as(i32, @intCast(text.len)));
 }
 
-fn drawButton(hdc: win.HDC, rect: Rect, label: []const u8, fill: win.COLORREF) void {
+fn drawTextColored(hdc: win.HDC, x: i32, y: i32, text: []const u8, color: win.COLORREF) void {
+    _ = win.SetTextColor(hdc, color);
+    _ = win.SetBkMode(hdc, win.TRANSPARENT);
+    drawText(hdc, x, y, text);
+}
+
+fn drawFrame(hdc: win.HDC, rect: Rect, fill: win.COLORREF, border: win.COLORREF) void {
     fillRectColor(hdc, rect, fill);
 
-    const border_brush = win.GetStockObject(win.BLACK_BRUSH) orelse return;
+    const border_brush = win.CreateSolidBrush(border) orelse return;
+    defer _ = win.DeleteObject(@ptrCast(border_brush));
     var border_rect = toWinRect(rect);
-    _ = win.FrameRect(hdc, &border_rect, @ptrCast(border_brush));
+    _ = win.FrameRect(hdc, &border_rect, border_brush);
+}
 
-    _ = win.SetTextColor(hdc, rgb(0, 0, 0));
-    _ = win.SetBkMode(hdc, win.TRANSPARENT);
-    drawText(hdc, rect.x + 10, rect.y + 10, label);
+fn drawButton(hdc: win.HDC, rect: Rect, label: []const u8, hovered: bool, theme: Theme) void {
+    drawFrame(hdc, rect, if (hovered) theme.button_hover else theme.button, theme.border);
+    drawTextColored(hdc, rect.x + 10, rect.y + 10, label, theme.text);
 }
 
 fn wndProc(hwnd: ?win.HWND, msg: win.UINT, w_param: win.WPARAM, l_param: win.LPARAM) callconv(.winapi) win.LRESULT {
@@ -756,12 +802,23 @@ pub fn main() !void {
         const mouse_x = cursor.x;
         const mouse_y = cursor.y;
 
+        var client_rect: win.RECT = undefined;
+        _ = win.GetClientRect(hwnd, &client_rect);
+
         const pause_rect = Rect{ .x = 20, .y = 20, .w = 110, .h = 35 };
         const reset_rect = Rect{ .x = 145, .y = 20, .w = 90, .h = 35 };
         const back_rect = Rect{ .x = 20, .y = 70, .w = 90, .h = 35 };
+        const dark_mode_rect = Rect{ .x = client_rect.right - 150, .y = 20, .w = 130, .h = 35 };
+        const pause_hovered = pause_rect.contains(mouse_x, mouse_y);
+        const reset_hovered = reset_rect.contains(mouse_x, mouse_y);
+        const back_hovered = back_rect.contains(mouse_x, mouse_y);
+        const dark_mode_hovered = dark_mode_rect.contains(mouse_x, mouse_y);
+        const theme = currentTheme(ui.dark_mode);
 
         if (click_pos) |click| {
-            if (pause_rect.contains(click.x, click.y)) {
+            if (dark_mode_rect.contains(click.x, click.y)) {
+                ui.dark_mode = !ui.dark_mode;
+            } else if (pause_rect.contains(click.x, click.y)) {
                 ui.paused = !ui.paused;
             } else if (reset_rect.contains(click.x, click.y)) {
                 worldReset(&world);
@@ -781,34 +838,33 @@ pub fn main() !void {
         const hdc = win.GetDC(hwnd) orelse return error.GetDeviceContextFailed;
         defer _ = win.ReleaseDC(hwnd, hdc);
 
-        var client_rect: win.RECT = undefined;
-        _ = win.GetClientRect(hwnd, &client_rect);
-        const bg = win.CreateSolidBrush(rgb(255, 255, 255)) orelse return error.CreateBrushFailed;
+        const bg = win.CreateSolidBrush(theme.background) orelse return error.CreateBrushFailed;
         defer _ = win.DeleteObject(@ptrCast(bg));
         _ = win.FillRect(hdc, &client_rect, bg);
 
-        drawButton(hdc, pause_rect, if (ui.paused) "Play" else "Pause", rgb(230, 230, 230));
-        drawButton(hdc, reset_rect, "Reset", rgb(230, 230, 230));
+        drawButton(hdc, pause_rect, if (ui.paused) "Play" else "Pause", pause_hovered, theme);
+        drawButton(hdc, reset_rect, "Reset", reset_hovered, theme);
+        drawButton(hdc, dark_mode_rect, if (ui.dark_mode) "Light Mode" else "Dark Mode", dark_mode_hovered, theme);
 
         var status_buf: [128]u8 = undefined;
         const status = try std.fmt.bufPrint(&status_buf, "Tick: {d}  Total: {d}", .{ tick, world.totalPeople() });
-        drawText(hdc, 260, 30, status);
+        drawTextColored(hdc, 260, 30, status, theme.text);
 
         if (ui.selected_place) |selected_place| {
-            drawButton(hdc, back_rect, "Back", rgb(230, 230, 230));
-            drawText(hdc, 130, 80, selected_place.asString());
+            drawButton(hdc, back_rect, "Back", back_hovered, theme);
+            drawTextColored(hdc, 130, 80, selected_place.asString(), theme.text);
 
-            drawText(hdc, 20, 130, "People in place:");
+            drawTextColored(hdc, 20, 130, "People in place:", theme.text);
             var y_people: i32 = 155;
             for (world.people.items) |person| {
                 if (person.place != selected_place) continue;
                 var person_buf: [220]u8 = undefined;
-                const person_line = try std.fmt.bufPrint(&person_buf, "#{d} {s} {s} ({s})", .{ person.id, person.first_name, person.last_name, person.kind.asString() });
-                drawText(hdc, 30, y_people, person_line);
+                const person_line = try std.fmt.bufPrint(&person_buf, "#{d} {s} {s}, age {d} ({s})", .{ person.id, person.first_name, person.last_name, person.age, person.kind.asString() });
+                drawTextColored(hdc, 30, y_people, person_line, theme.text);
                 y_people += 18;
             }
 
-            drawText(hdc, 620, 130, "Current connections:");
+            drawTextColored(hdc, 620, 130, "Current connections:", theme.text);
             var y_conn: i32 = 155;
             for (world.people.items) |person| {
                 const partner_id = person.connecting_to_id orelse continue;
@@ -818,7 +874,7 @@ pub fn main() !void {
 
                 var conn_buf: [240]u8 = undefined;
                 const conn_line = try std.fmt.bufPrint(&conn_buf, "{s} {s} <-> {s} {s} ({s})", .{ person.first_name, person.last_name, partner.first_name, partner.last_name, @tagName(person.connection_type.?) });
-                drawText(hdc, 630, y_conn, conn_line);
+                drawTextColored(hdc, 630, y_conn, conn_line, theme.text);
                 y_conn += 18;
             }
         } else {
@@ -830,11 +886,11 @@ pub fn main() !void {
                 const rect = Rect{ .x = 20 + col * 360, .y = 120 + row * 110, .w = 330, .h = 90 };
                 const is_hovered = rect.contains(mouse_x, mouse_y);
                 if (is_hovered) hovered_place = place;
-                drawButton(hdc, rect, place.asString(), if (is_hovered) rgb(204, 204, 204) else rgb(230, 230, 230));
+                drawButton(hdc, rect, place.asString(), is_hovered, theme);
 
                 var pop_buf: [96]u8 = undefined;
                 const pop_text = try std.fmt.bufPrint(&pop_buf, "Population: {d}/{d}", .{ world.place_population[@intFromEnum(place)], World.place_capacity });
-                drawText(hdc, rect.x + 10, rect.y + 45, pop_text);
+                drawTextColored(hdc, rect.x + 10, rect.y + 45, pop_text, theme.text);
 
                 if (click_pos) |click| {
                     if (rect.contains(click.x, click.y)) {
@@ -846,13 +902,13 @@ pub fn main() !void {
 
             if (hovered_place) |place| {
                 const panel = Rect{ .x = 760, .y = 120, .w = 400, .h = 130 };
-                drawButton(hdc, panel, "", rgb(173, 216, 230));
-                drawText(hdc, panel.x + 10, panel.y + 10, place.asString());
+                drawFrame(hdc, panel, theme.panel, theme.border);
+                drawTextColored(hdc, panel.x + 10, panel.y + 10, place.asString(), theme.text);
 
                 var info_buf: [120]u8 = undefined;
                 const info = try std.fmt.bufPrint(&info_buf, "Population: {d}   Capacity: {d}", .{ world.place_population[@intFromEnum(place)], World.place_capacity });
-                drawText(hdc, panel.x + 10, panel.y + 40, info);
-                drawText(hdc, panel.x + 10, panel.y + 70, "Click a place to inspect details");
+                drawTextColored(hdc, panel.x + 10, panel.y + 40, info, theme.text);
+                drawTextColored(hdc, panel.x + 10, panel.y + 70, "Click a place to inspect details", theme.text);
             }
         }
 
