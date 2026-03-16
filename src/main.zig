@@ -187,16 +187,16 @@ const SkillLevels = struct {
     control: u8,
 };
 
-const ConnectionType = enum {
+const CaveType = enum {
     top,
     front,
     back,
-    wet,
-    covered,
-    deep,
-    rough,
-    submit,
-    control,
+};
+
+const Connection = struct {
+    stick_person_id: usize,
+    cave_person_id: usize,
+    cave_type: CaveType,
 };
 
 const Person = struct {
@@ -210,14 +210,13 @@ const Person = struct {
     kinks: KinkLevels,
     skills: SkillLevels,
     owned_by_id: ?usize,
-    connecting_to_id: ?usize,
-    connection_type: ?ConnectionType,
 };
 
 const World = struct {
     const place_capacity: usize = 25;
 
     people: std.ArrayList(Person),
+    connections: std.ArrayList(Connection),
     place_population: [10]usize,
     male_count: usize,
     female_count: usize,
@@ -226,6 +225,7 @@ const World = struct {
     pub fn init() World {
         return .{
             .people = .{},
+            .connections = .{},
             .place_population = [_]usize{0} ** 10,
             .male_count = 0,
             .female_count = 0,
@@ -235,6 +235,7 @@ const World = struct {
 
     pub fn deinit(self: *World, allocator: std.mem.Allocator) void {
         self.people.deinit(allocator);
+        self.connections.deinit(allocator);
     }
 
     pub fn addPerson(self: *World, person: Person, allocator: std.mem.Allocator) !bool {
@@ -333,11 +334,18 @@ fn clampStat(value: u16) u8 {
     return @as(u8, @intCast(@min(value, 100)));
 }
 
-fn canConnectKinds(person_kind: PersonType, other_kind: PersonType) bool {
-    return switch (person_kind) {
-        .male => other_kind == .female or other_kind == .futa,
-        .futa => true,
-        .female => true,
+fn hasStick(kind: PersonType) bool {
+    return kind == .male or kind == .futa;
+}
+
+fn hasCaves(kind: PersonType) bool {
+    return kind == .female or kind == .futa;
+}
+
+fn caveCapacity(skill: u8, cave_type: CaveType) u8 {
+    return switch (cave_type) {
+        .top => if (skill >= 50) 2 else 1,
+        .front, .back => if (skill >= 67) 3 else if (skill >= 34) 2 else 1,
     };
 }
 
@@ -345,16 +353,133 @@ fn ownerOwnedPair(person: Person, other: Person) bool {
     return person.owned_by_id == other.id or other.owned_by_id == person.id;
 }
 
-fn canConnectPair(person: Person, other: Person) bool {
-    if (person.id == other.id or person.place != other.place) {
+fn caveSkillLevel(levels: *const SkillLevels, cave_type: CaveType) u8 {
+    return switch (cave_type) {
+        .top => levels.top,
+        .front => levels.front,
+        .back => levels.back,
+    };
+}
+
+fn caveSkillLevelPtr(levels: *SkillLevels, cave_type: CaveType) *u8 {
+    return switch (cave_type) {
+        .top => &levels.top,
+        .front => &levels.front,
+        .back => &levels.back,
+    };
+}
+
+fn caveKinkLevel(levels: *const KinkLevels, cave_type: CaveType) u8 {
+    return switch (cave_type) {
+        .top => levels.top,
+        .front => levels.front,
+        .back => levels.back,
+    };
+}
+
+fn caveKinkLevelPtr(levels: *KinkLevels, cave_type: CaveType) *u8 {
+    return switch (cave_type) {
+        .top => &levels.top,
+        .front => &levels.front,
+        .back => &levels.back,
+    };
+}
+
+fn personHasStickConnection(person_id: usize, connections: []const Connection) bool {
+    for (connections) |connection| {
+        if (connection.stick_person_id == person_id) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+fn caveOccupancy(person_id: usize, cave_type: CaveType, connections: []const Connection) u8 {
+    var count: u8 = 0;
+    for (connections) |connection| {
+        if (connection.cave_person_id == person_id and connection.cave_type == cave_type) {
+            count += 1;
+        }
+    }
+
+    return count;
+}
+
+fn totalCaveCapacity(person: Person) u8 {
+    if (!hasCaves(person.kind)) {
+        return 0;
+    }
+
+    return caveCapacity(person.skills.top, .top) +
+        caveCapacity(person.skills.front, .front) +
+        caveCapacity(person.skills.back, .back);
+}
+
+fn totalCaveOccupancy(person_id: usize, connections: []const Connection) u8 {
+    var count: u8 = 0;
+    for (connections) |connection| {
+        if (connection.cave_person_id == person_id) {
+            count += 1;
+        }
+    }
+
+    return count;
+}
+
+fn openCaveSlots(person: Person, connections: []const Connection) u8 {
+    const capacity = totalCaveCapacity(person);
+    const occupancy = totalCaveOccupancy(person.id, connections);
+    return capacity -| occupancy;
+}
+
+fn caveHasCapacity(person: Person, cave_type: CaveType, connections: []const Connection) bool {
+    if (!hasCaves(person.kind)) {
         return false;
     }
 
-    return canConnectKinds(person.kind, other.kind);
+    return caveOccupancy(person.id, cave_type, connections) < caveCapacity(caveSkillLevel(&person.skills, cave_type), cave_type);
 }
 
-fn personCanAttemptConnection(person: Person, other: Person) bool {
-    if (!canConnectPair(person, other)) {
+fn personHasAnyConnection(person_id: usize, connections: []const Connection) bool {
+    for (connections) |connection| {
+        if (connection.stick_person_id == person_id or connection.cave_person_id == person_id) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+fn personConnectionCount(person_id: usize, connections: []const Connection) u8 {
+    var count: u8 = 0;
+    for (connections) |connection| {
+        if (connection.stick_person_id == person_id or connection.cave_person_id == person_id) {
+            count += 1;
+        }
+    }
+
+    return count;
+}
+
+fn canStickConnectToCave(stick_person: Person, cave_person: Person, connections: []const Connection) bool {
+    if (stick_person.id == cave_person.id or stick_person.place != cave_person.place) {
+        return false;
+    }
+
+    if (!hasStick(stick_person.kind) or !hasCaves(cave_person.kind)) {
+        return false;
+    }
+
+    if (personHasStickConnection(stick_person.id, connections)) {
+        return false;
+    }
+
+    return openCaveSlots(cave_person, connections) > 0;
+}
+
+fn personCanAttemptConnection(person: Person, other: Person, connections: []const Connection) bool {
+    if (!canStickConnectToCave(person, other, connections) and !canStickConnectToCave(other, person, connections)) {
         return false;
     }
 
@@ -365,10 +490,10 @@ fn personCanAttemptConnection(person: Person, other: Person) bool {
     return person.moods.energy >= 50 and other.moods.energy >= 50;
 }
 
-fn connectablePeopleCount(person: Person, people: []const Person) u8 {
+fn connectablePeopleCount(person: Person, people: []const Person, connections: []const Connection) u8 {
     var count: u8 = 0;
     for (people) |other| {
-        if (canConnectPair(person, other)) {
+        if (personCanAttemptConnection(person, other, connections)) {
             count += 1;
         }
     }
@@ -376,151 +501,189 @@ fn connectablePeopleCount(person: Person, people: []const Person) u8 {
     return count;
 }
 
-fn kinkLevel(levels: *const KinkLevels, connection_type: ConnectionType) u8 {
-    return switch (connection_type) {
-        .top => levels.top,
-        .front => levels.front,
-        .back => levels.back,
-        .wet => levels.wet,
-        .covered => levels.covered,
-        .deep => levels.deep,
-        .rough => levels.rough,
-        .submit => levels.submit,
-        .control => levels.control,
-    };
+const ConnectionProposal = struct {
+    stick_person_id: usize,
+    cave_person_id: usize,
+    cave_type: CaveType,
+};
+
+const cave_types = [_]CaveType{ .top, .front, .back };
+
+fn appendAvailableCaveProposals(
+    proposals: *std.ArrayList(ConnectionProposal),
+    stick_person: Person,
+    cave_person: Person,
+    connections: []const Connection,
+    allocator: std.mem.Allocator,
+) !void {
+    if (!canStickConnectToCave(stick_person, cave_person, connections)) {
+        return;
+    }
+
+    for (cave_types) |cave_type| {
+        if (!caveHasCapacity(cave_person, cave_type, connections)) {
+            continue;
+        }
+
+        try proposals.append(allocator, .{
+            .stick_person_id = stick_person.id,
+            .cave_person_id = cave_person.id,
+            .cave_type = cave_type,
+        });
+    }
 }
 
-fn chooseConnectionType(person: Person, other: Person, random: std.Random) ConnectionType {
-    const all_types = [_]ConnectionType{ .top, .front, .back, .wet, .covered, .deep, .rough, .submit, .control };
-    var weights: [all_types.len]f64 = [_]f64{0} ** all_types.len;
-    var total_weight: f64 = 0;
+fn chooseConnectionProposal(
+    person: Person,
+    other: Person,
+    connections: []const Connection,
+    random: std.Random,
+    allocator: std.mem.Allocator,
+) !?ConnectionProposal {
+    var proposals = std.ArrayList(ConnectionProposal){};
+    defer proposals.deinit(allocator);
 
-    if (ownerOwnedPair(person, other)) {
-        const owner = if (other.owned_by_id == person.id) person else other;
-        for (all_types, 0..) |connection_type, i| {
-            const weight = @as(f64, @floatFromInt(kinkLevel(&owner.kinks, connection_type))) / 100.0;
-            weights[i] = weight;
-            total_weight += weight;
-        }
-    } else {
-        for (all_types, 0..) |connection_type, i| {
-            const person_weight = (@as(f64, @floatFromInt(kinkLevel(&person.kinks, connection_type))) / 100.0) * 0.5;
-            const other_weight = (@as(f64, @floatFromInt(kinkLevel(&other.kinks, connection_type))) / 100.0) * 0.25;
-            const weight = person_weight * other_weight;
-            weights[i] = weight;
-            total_weight += weight;
-        }
+    try appendAvailableCaveProposals(&proposals, person, other, connections, allocator);
+    try appendAvailableCaveProposals(&proposals, other, person, connections, allocator);
+
+    if (proposals.items.len == 0) {
+        return null;
+    }
+
+    var total_weight: f64 = 0;
+    var weights = try allocator.alloc(f64, proposals.items.len);
+    defer allocator.free(weights);
+
+    for (proposals.items, 0..) |proposal, i| {
+        const stick_person = if (proposal.stick_person_id == person.id) person else other;
+        const cave_person = if (proposal.cave_person_id == person.id) person else other;
+
+        const weight = if (ownerOwnedPair(person, other))
+            blk: {
+                const owner = if (other.owned_by_id == person.id) person else other;
+                break :blk @as(f64, @floatFromInt(caveKinkLevel(&owner.kinks, proposal.cave_type))) / 100.0;
+            }
+        else blk: {
+            const stick_weight = (@as(f64, @floatFromInt(caveKinkLevel(&stick_person.kinks, proposal.cave_type))) / 100.0) * 0.5;
+            const cave_weight = (@as(f64, @floatFromInt(caveKinkLevel(&cave_person.kinks, proposal.cave_type))) / 100.0) * 0.25;
+            break :blk stick_weight * cave_weight;
+        };
+
+        weights[i] = weight;
+        total_weight += weight;
     }
 
     if (total_weight <= 0) {
-        return all_types[0];
+        return proposals.items[0];
     }
 
     var roll = random.float(f64) * total_weight;
-    for (all_types, 0..) |connection_type, i| {
+    for (proposals.items, 0..) |proposal, i| {
         roll -= weights[i];
         if (roll <= 0) {
-            return connection_type;
+            return proposal;
         }
     }
 
-    return all_types[all_types.len - 1];
+    return proposals.items[proposals.items.len - 1];
 }
 
-fn skillLevelPtr(levels: *SkillLevels, connection_type: ConnectionType) *u8 {
-    return switch (connection_type) {
-        .top => &levels.top,
-        .front => &levels.front,
-        .back => &levels.back,
-        .wet => &levels.wet,
-        .covered => &levels.covered,
-        .deep => &levels.deep,
-        .rough => &levels.rough,
-        .submit => &levels.submit,
-        .control => &levels.control,
-    };
-}
-
-fn kinkLevelPtr(levels: *KinkLevels, connection_type: ConnectionType) *u8 {
-    return switch (connection_type) {
-        .top => &levels.top,
-        .front => &levels.front,
-        .back => &levels.back,
-        .wet => &levels.wet,
-        .covered => &levels.covered,
-        .deep => &levels.deep,
-        .rough => &levels.rough,
-        .submit => &levels.submit,
-        .control => &levels.control,
-    };
-}
-
-fn clearConnection(people: []Person, person_index: usize) void {
-    const partner_id = people[person_index].connecting_to_id orelse {
-        people[person_index].connection_type = null;
-        return;
-    };
-    const person_first_name = people[person_index].first_name;
-    const person_last_name = people[person_index].last_name;
-    people[person_index].moods.warm = 0;
-    people[person_index].connecting_to_id = null;
-    people[person_index].connection_type = null;
-
-    for (people, 0..) |*other, other_index| {
-        if (other_index != person_index and other.id == partner_id) {
-            const other_first_name = other.first_name;
-            const other_last_name = other.last_name;
-            other.moods.warm = 0;
-            other.connecting_to_id = null;
-            other.connection_type = null;
-
-            std.debug.print("Tick: {s} {s} finished connecting with {s} {s}; warm reset to 0\n", .{ person_first_name, person_last_name, other_first_name, other_last_name });
-            std.debug.print("Tick: {s} {s} finished connecting with {s} {s}; warm reset to 0\n", .{ other_first_name, other_last_name, person_first_name, person_last_name });
-            break;
+fn clearAllConnectionsForPerson(world: *World, person_id: usize) void {
+    var i: usize = 0;
+    while (i < world.connections.items.len) {
+        const connection = world.connections.items[i];
+        if (connection.stick_person_id != person_id and connection.cave_person_id != person_id) {
+            i += 1;
+            continue;
         }
-    }
-}
 
-fn updateConnectionActivity(world: *World, random: std.Random) void {
-    for (world.people.items, 0..) |person, i| {
-        if (person.connecting_to_id == null) {
-            world.people.items[i].moods.energy = clampStat(@as(u16, person.moods.energy) + 2);
-            const increase = connectablePeopleCount(person, world.people.items);
-            world.people.items[i].moods.warm = clampStat(@as(u16, person.moods.warm) + increase);
-        } else {
-            world.people.items[i].moods.energy = person.moods.energy -| 5;
-            if (world.people.items[i].moods.energy == 0) {
-                clearConnection(world.people.items, i);
-                continue;
+        const stick = findPersonById(world.people.items, connection.stick_person_id);
+        const cave = findPersonById(world.people.items, connection.cave_person_id);
+        if (stick) |stick_person| {
+            if (findPersonIndexById(world.people.items, stick_person.id)) |index| {
+                world.people.items[index].moods.warm = 0;
             }
+        }
+        if (cave) |cave_person| {
+            if (findPersonIndexById(world.people.items, cave_person.id)) |index| {
+                world.people.items[index].moods.warm = 0;
+            }
+        }
 
-            if (person.connection_type) |connection_type| {
-                const skill = skillLevelPtr(&world.people.items[i].skills, connection_type);
+        if (stick != null and cave != null) {
+            std.debug.print("Tick: {s} {s} disconnected from {s} {s} ({s}); warm reset to 0\n", .{
+                stick.?.first_name,
+                stick.?.last_name,
+                cave.?.first_name,
+                cave.?.last_name,
+                @tagName(connection.cave_type),
+            });
+        }
+
+        _ = world.connections.swapRemove(i);
+    }
+}
+
+fn updateConnectionActivity(world: *World, random: std.Random, allocator: std.mem.Allocator) !void {
+    for (world.people.items, 0..) |person, i| {
+        const connection_count = personConnectionCount(person.id, world.connections.items);
+        if (connection_count == 0) {
+            world.people.items[i].moods.energy = clampStat(@as(u16, person.moods.energy) + 2);
+            const increase = connectablePeopleCount(person, world.people.items, world.connections.items);
+            world.people.items[i].moods.warm = clampStat(@as(u16, person.moods.warm) + increase);
+            continue;
+        }
+
+        const drain = @as(u16, connection_count) * 5;
+        world.people.items[i].moods.energy = person.moods.energy -| @as(u8, @intCast(@min(drain, 255)));
+        if (world.people.items[i].moods.energy == 0) {
+            clearAllConnectionsForPerson(world, person.id);
+            continue;
+        }
+
+        if (personHasStickConnection(person.id, world.connections.items)) {
+            if (findStickConnection(world.connections.items, person.id)) |connection| {
+                const skill = caveSkillLevelPtr(&world.people.items[i].skills, connection.cave_type);
                 skill.* = clampStat(@as(u16, skill.*) + 2);
 
                 if (random.boolean()) {
-                    const kink = kinkLevelPtr(&world.people.items[i].kinks, connection_type);
+                    const kink = caveKinkLevelPtr(&world.people.items[i].kinks, connection.cave_type);
                     kink.* = clampStat(@as(u16, kink.*) + 1);
+                }
+            }
+        }
+
+        if (hasCaves(person.kind)) {
+            for (cave_types) |cave_type| {
+                const occupancy = caveOccupancy(person.id, cave_type, world.connections.items);
+                if (occupancy == 0) {
+                    continue;
+                }
+
+                const skill = caveSkillLevelPtr(&world.people.items[i].skills, cave_type);
+                skill.* = clampStat(@as(u16, skill.*) + (@as(u16, occupancy) * 2));
+
+                if (random.boolean()) {
+                    const kink = caveKinkLevelPtr(&world.people.items[i].kinks, cave_type);
+                    kink.* = clampStat(@as(u16, kink.*) + occupancy);
                 }
             }
         }
     }
 
-    for (world.people.items, 0..) |person, i| {
-        if (person.connecting_to_id != null) {
+    for (world.people.items) |person| {
+        if (!personHasStickConnection(person.id, world.connections.items) and openCaveSlots(person, world.connections.items) == 0) {
             continue;
         }
 
-        for (world.people.items, 0..) |other, j| {
-            if (i == j or other.connecting_to_id != null) {
+        for (world.people.items) |other| {
+            if (person.id == other.id) {
                 continue;
             }
 
-            if (!personCanAttemptConnection(person, other)) {
+            if (!personCanAttemptConnection(person, other, world.connections.items)) {
                 continue;
             }
-
-            std.debug.print("Tick: {s} {s} is connecting with {s} {s}\n", .{ person.first_name, person.last_name, other.first_name, other.last_name });
 
             const should_connect = if (ownerOwnedPair(person, other))
                 true
@@ -534,12 +697,22 @@ fn updateConnectionActivity(world: *World, random: std.Random) void {
                 continue;
             }
 
-            const connection_type = chooseConnectionType(person, other, random);
-            world.people.items[i].connecting_to_id = other.id;
-            world.people.items[j].connecting_to_id = person.id;
-            world.people.items[i].connection_type = connection_type;
-            world.people.items[j].connection_type = connection_type;
-            std.debug.print("Tick: {s} {s} connected with {s} {s} ({s})\n", .{ person.first_name, person.last_name, other.first_name, other.last_name, @tagName(connection_type) });
+            const proposal = (try chooseConnectionProposal(person, other, world.connections.items, random, allocator)) orelse continue;
+            try world.connections.append(allocator, .{
+                .stick_person_id = proposal.stick_person_id,
+                .cave_person_id = proposal.cave_person_id,
+                .cave_type = proposal.cave_type,
+            });
+
+            const stick = findPersonById(world.people.items, proposal.stick_person_id) orelse continue;
+            const cave = findPersonById(world.people.items, proposal.cave_person_id) orelse continue;
+            std.debug.print("Tick: {s} {s} connected to {s} {s} ({s})\n", .{
+                stick.first_name,
+                stick.last_name,
+                cave.first_name,
+                cave.last_name,
+                @tagName(proposal.cave_type),
+            });
             break;
         }
     }
@@ -582,6 +755,30 @@ fn randomOwnedById(owned_kind: PersonType, owned_place: Place, people: []const P
     }
 
     return selected_owner_id;
+}
+
+fn findPersonById(people: []const Person, person_id: usize) ?Person {
+    for (people) |person| {
+        if (person.id == person_id) return person;
+    }
+    return null;
+}
+
+fn findPersonIndexById(people: []const Person, person_id: usize) ?usize {
+    for (people, 0..) |person, index| {
+        if (person.id == person_id) return index;
+    }
+    return null;
+}
+
+fn findStickConnection(connections: []const Connection, person_id: usize) ?Connection {
+    for (connections) |connection| {
+        if (connection.stick_person_id == person_id) {
+            return connection;
+        }
+    }
+
+    return null;
 }
 
 const Rect = struct {
@@ -634,6 +831,7 @@ fn currentTheme(dark_mode: bool) Theme {
 
 fn worldReset(world: *World) void {
     world.people.clearRetainingCapacity();
+    world.connections.clearRetainingCapacity();
     world.place_population = [_]usize{0} ** 10;
     world.male_count = 0;
     world.female_count = 0;
@@ -655,21 +853,12 @@ fn stepSimulation(world: *World, tick: *u64, random: std.Random, allocator: std.
         .kinks = randomKinkLevels(random),
         .skills = randomSkillLevels(random),
         .owned_by_id = randomOwnedById(kind, place, world.people.items, random),
-        .connecting_to_id = null,
-        .connection_type = null,
     };
 
     _ = try world.addPerson(new_person, allocator);
     if (tick.* % 10 == 0) {
-        updateConnectionActivity(world, random);
+        try updateConnectionActivity(world, random, allocator);
     }
-}
-
-fn findPersonById(people: []const Person, person_id: usize) ?Person {
-    for (people) |person| {
-        if (person.id == person_id) return person;
-    }
-    return null;
 }
 
 fn rgb(r: u8, g: u8, b: u8) win.COLORREF {
@@ -789,6 +978,19 @@ fn formatOwnedPeople(buf: []u8, owner_id: usize, people: []const Person) ![]cons
     return stream.getWritten();
 }
 
+fn formatAnatomy(buf: []u8, person: Person, connections: []const Connection) ![]const u8 {
+    const stick_state = if (hasStick(person.kind))
+        if (personHasStickConnection(person.id, connections)) "busy" else "free"
+    else
+        "none";
+
+    return std.fmt.bufPrint(buf, "Stick: {s}  Cave slots open: {d}/{d}", .{
+        stick_state,
+        openCaveSlots(person, connections),
+        totalCaveCapacity(person),
+    });
+}
+
 fn drawPersonTooltip(
     hdc: win.HDC,
     client_rect: win.RECT,
@@ -796,10 +998,11 @@ fn drawPersonTooltip(
     mouse_y: i32,
     person: Person,
     people: []const Person,
+    connections: []const Connection,
     theme: Theme,
 ) !void {
     const tooltip_w: i32 = 540;
-    const tooltip_h: i32 = 210;
+    const tooltip_h: i32 = 228;
     const line_height: i32 = 18;
     const tooltip_x = clampI32(mouse_x + 18, 10, client_rect.right - tooltip_w - 10);
     const tooltip_y = clampI32(mouse_y + 18, 10, client_rect.bottom - tooltip_h - 10);
@@ -844,16 +1047,15 @@ fn drawPersonTooltip(
     drawTextColored(hdc, tooltip_rect.x + 10, y, skills_secondary_line, theme.text);
     y += line_height;
 
+    var anatomy_buf: [160]u8 = undefined;
+    const anatomy_line = try formatAnatomy(&anatomy_buf, person, connections);
+    drawTextColored(hdc, tooltip_rect.x + 10, y, anatomy_line, theme.text);
+    y += line_height;
+
     var connection_buf: [160]u8 = undefined;
-    const connection_line = if (person.connecting_to_id) |partner_id| blk: {
-        const partner = findPersonById(people, partner_id) orelse
-            break :blk try std.fmt.bufPrint(&connection_buf, "Currently connecting: yes (unknown partner)", .{});
-        break :blk try std.fmt.bufPrint(&connection_buf, "Currently connecting: yes, with {s} {s} ({s})", .{
-            partner.first_name,
-            partner.last_name,
-            @tagName(person.connection_type orelse .top),
-        });
-    } else try std.fmt.bufPrint(&connection_buf, "Currently connecting: no", .{});
+    const connection_line = try std.fmt.bufPrint(&connection_buf, "Active connections: {d}", .{
+        personConnectionCount(person.id, connections),
+    });
     drawTextColored(hdc, tooltip_rect.x + 10, y, connection_line, theme.text);
     y += line_height;
 
@@ -1029,20 +1231,25 @@ pub fn main() !void {
 
             drawTextColored(hdc, 620, 130, "Current connections:", theme.text);
             var y_conn: i32 = 155;
-            for (world.people.items) |person| {
-                const partner_id = person.connecting_to_id orelse continue;
-                if (person.place != selected_place or person.id >= partner_id) continue;
-                const partner = findPersonById(world.people.items, partner_id) orelse continue;
-                if (partner.place != selected_place) continue;
+            for (world.connections.items) |connection| {
+                const stick = findPersonById(world.people.items, connection.stick_person_id) orelse continue;
+                const cave = findPersonById(world.people.items, connection.cave_person_id) orelse continue;
+                if (stick.place != selected_place or cave.place != selected_place) continue;
 
                 var conn_buf: [240]u8 = undefined;
-                const conn_line = try std.fmt.bufPrint(&conn_buf, "{s} {s} <-> {s} {s} ({s})", .{ person.first_name, person.last_name, partner.first_name, partner.last_name, @tagName(person.connection_type.?) });
+                const conn_line = try std.fmt.bufPrint(&conn_buf, "{s} {s} -> {s} {s} ({s})", .{
+                    stick.first_name,
+                    stick.last_name,
+                    cave.first_name,
+                    cave.last_name,
+                    @tagName(connection.cave_type),
+                });
                 drawTextColored(hdc, 630, y_conn, conn_line, theme.text);
                 y_conn += 18;
             }
 
             if (hovered_person) |person| {
-                try drawPersonTooltip(hdc, client_rect, mouse_x, mouse_y, person, world.people.items, theme);
+                try drawPersonTooltip(hdc, client_rect, mouse_x, mouse_y, person, world.people.items, world.connections.items, theme);
             }
         } else {
             var hovered_place: ?Place = null;
