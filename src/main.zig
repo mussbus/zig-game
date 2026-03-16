@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const windows = std.os.windows;
 
 comptime {
     if (builtin.os.tag != .windows) {
@@ -7,9 +8,97 @@ comptime {
     }
 }
 
-const c = @cImport({
-    @cInclude("windows.h");
-});
+const win = struct {
+    const BOOL = windows.BOOL;
+    const UINT = windows.UINT;
+    const WPARAM = windows.WPARAM;
+    const LPARAM = windows.LPARAM;
+    const LRESULT = windows.LRESULT;
+    const HINSTANCE = windows.HINSTANCE;
+    const HWND = windows.HWND;
+    const HDC = windows.HDC;
+    const HBRUSH = windows.HBRUSH;
+    const HCURSOR = windows.HCURSOR;
+    const HMENU = windows.HMENU;
+    const POINT = windows.POINT;
+    const RECT = windows.RECT;
+    const COLORREF = u32;
+    const ATOM = windows.ATOM;
+    const HGDIOBJ = *opaque {};
+    const WNDPROC = *const fn (?HWND, UINT, WPARAM, LPARAM) callconv(.winapi) LRESULT;
+
+    const WNDCLASSA = extern struct {
+        style: u32,
+        lpfnWndProc: ?WNDPROC,
+        cbClsExtra: i32,
+        cbWndExtra: i32,
+        hInstance: ?HINSTANCE,
+        hIcon: ?*opaque {},
+        hCursor: ?HCURSOR,
+        hbrBackground: ?HBRUSH,
+        lpszMenuName: ?[*:0]const u8,
+        lpszClassName: [*:0]const u8,
+    };
+
+    const MSG = extern struct {
+        hwnd: ?HWND,
+        message: UINT,
+        wParam: WPARAM,
+        lParam: LPARAM,
+        time: u32,
+        pt: POINT,
+        lPrivate: u32,
+    };
+
+    const CS_VREDRAW: u32 = 0x0001;
+    const CS_HREDRAW: u32 = 0x0002;
+    const WS_VISIBLE: u32 = 0x10000000;
+    const WS_OVERLAPPEDWINDOW: u32 = 0x00CF0000;
+    const CW_USEDEFAULT: i32 = @as(i32, @bitCast(@as(u32, 0x80000000)));
+    const PM_REMOVE: UINT = 0x0001;
+    const WM_DESTROY: UINT = 0x0002;
+    const WM_QUIT: UINT = 0x0012;
+    const WM_LBUTTONDOWN: UINT = 0x0201;
+    const BLACK_BRUSH: i32 = 4;
+    const TRANSPARENT: i32 = 1;
+    const IDC_ARROW: [*:0]const u8 = @ptrFromInt(32512);
+
+    extern "kernel32" fn GetModuleHandleA(lpModuleName: ?[*:0]const u8) callconv(.winapi) ?HINSTANCE;
+    extern "user32" fn RegisterClassA(lpWndClass: *const WNDCLASSA) callconv(.winapi) ATOM;
+    extern "user32" fn CreateWindowExA(
+        dwExStyle: u32,
+        lpClassName: [*:0]const u8,
+        lpWindowName: [*:0]const u8,
+        dwStyle: u32,
+        X: i32,
+        Y: i32,
+        nWidth: i32,
+        nHeight: i32,
+        hWndParent: ?HWND,
+        hMenu: ?HMENU,
+        hInstance: ?HINSTANCE,
+        lpParam: ?*anyopaque,
+    ) callconv(.winapi) ?HWND;
+    extern "user32" fn LoadCursorA(hInstance: ?HINSTANCE, lpCursorName: ?[*:0]const u8) callconv(.winapi) ?HCURSOR;
+    extern "user32" fn DefWindowProcA(hWnd: ?HWND, msg: UINT, wParam: WPARAM, lParam: LPARAM) callconv(.winapi) LRESULT;
+    extern "user32" fn PostQuitMessage(exit_code: i32) callconv(.winapi) void;
+    extern "user32" fn PeekMessageA(lpMsg: *MSG, hWnd: ?HWND, wMsgFilterMin: UINT, wMsgFilterMax: UINT, wRemoveMsg: UINT) callconv(.winapi) BOOL;
+    extern "user32" fn TranslateMessage(lpMsg: *const MSG) callconv(.winapi) BOOL;
+    extern "user32" fn DispatchMessageA(lpMsg: *const MSG) callconv(.winapi) LRESULT;
+    extern "user32" fn GetCursorPos(lpPoint: *POINT) callconv(.winapi) BOOL;
+    extern "user32" fn ScreenToClient(hWnd: HWND, lpPoint: *POINT) callconv(.winapi) BOOL;
+    extern "user32" fn GetDC(hWnd: HWND) callconv(.winapi) ?HDC;
+    extern "user32" fn ReleaseDC(hWnd: HWND, hDC: HDC) callconv(.winapi) i32;
+    extern "user32" fn GetClientRect(hWnd: HWND, lpRect: *RECT) callconv(.winapi) BOOL;
+    extern "user32" fn FillRect(hDC: HDC, lprc: *const RECT, hbr: HBRUSH) callconv(.winapi) i32;
+    extern "user32" fn FrameRect(hDC: HDC, lprc: *const RECT, hbr: HBRUSH) callconv(.winapi) i32;
+    extern "gdi32" fn CreateSolidBrush(color: COLORREF) callconv(.winapi) ?HBRUSH;
+    extern "gdi32" fn DeleteObject(ho: HGDIOBJ) callconv(.winapi) BOOL;
+    extern "gdi32" fn GetStockObject(index: i32) callconv(.winapi) ?HGDIOBJ;
+    extern "gdi32" fn SetTextColor(hdc: HDC, color: COLORREF) callconv(.winapi) COLORREF;
+    extern "gdi32" fn SetBkMode(hdc: HDC, mode: i32) callconv(.winapi) i32;
+    extern "gdi32" fn TextOutA(hdc: HDC, x: i32, y: i32, text: [*]const u8, len: i32) callconv(.winapi) BOOL;
+};
 
 const male_first_names = [_][]const u8{
     "James", "John", "Robert", "Michael", "David",
@@ -545,11 +634,11 @@ fn findPersonById(people: []const Person, person_id: usize) ?Person {
     return null;
 }
 
-fn rgb(r: u8, g: u8, b: u8) c.COLORREF {
-    return @as(c.COLORREF, r) | (@as(c.COLORREF, g) << 8) | (@as(c.COLORREF, b) << 16);
+fn rgb(r: u8, g: u8, b: u8) win.COLORREF {
+    return @as(win.COLORREF, r) | (@as(win.COLORREF, g) << 8) | (@as(win.COLORREF, b) << 16);
 }
 
-fn toWinRect(rect: Rect) c.RECT {
+fn toWinRect(rect: Rect) win.RECT {
     return .{
         .left = rect.x,
         .top = rect.y,
@@ -558,36 +647,36 @@ fn toWinRect(rect: Rect) c.RECT {
     };
 }
 
-fn fillRectColor(hdc: c.HDC, rect: Rect, color: c.COLORREF) void {
-    const brush = c.CreateSolidBrush(color);
-    defer _ = c.DeleteObject(brush);
+fn fillRectColor(hdc: win.HDC, rect: Rect, color: win.COLORREF) void {
+    const brush = win.CreateSolidBrush(color) orelse return;
+    defer _ = win.DeleteObject(@ptrCast(brush));
     var win_rect = toWinRect(rect);
-    _ = c.FillRect(hdc, &win_rect, brush);
+    _ = win.FillRect(hdc, &win_rect, brush);
 }
 
-fn drawText(hdc: c.HDC, x: i32, y: i32, text: []const u8) void {
-    _ = c.TextOutA(hdc, x, y, text.ptr, @as(c_int, @intCast(text.len)));
+fn drawText(hdc: win.HDC, x: i32, y: i32, text: []const u8) void {
+    _ = win.TextOutA(hdc, x, y, text.ptr, @as(i32, @intCast(text.len)));
 }
 
-fn drawButton(hdc: c.HDC, rect: Rect, label: []const u8, fill: c.COLORREF) void {
+fn drawButton(hdc: win.HDC, rect: Rect, label: []const u8, fill: win.COLORREF) void {
     fillRectColor(hdc, rect, fill);
 
-    const border_brush = c.GetStockObject(c.BLACK_BRUSH);
+    const border_brush = win.GetStockObject(win.BLACK_BRUSH) orelse return;
     var border_rect = toWinRect(rect);
-    _ = c.FrameRect(hdc, &border_rect, @ptrCast(border_brush));
+    _ = win.FrameRect(hdc, &border_rect, @ptrCast(border_brush));
 
-    _ = c.SetTextColor(hdc, rgb(0, 0, 0));
-    _ = c.SetBkMode(hdc, c.TRANSPARENT);
+    _ = win.SetTextColor(hdc, rgb(0, 0, 0));
+    _ = win.SetBkMode(hdc, win.TRANSPARENT);
     drawText(hdc, rect.x + 10, rect.y + 10, label);
 }
 
-fn wndProc(hwnd: c.HWND, msg: c.UINT, w_param: c.WPARAM, l_param: c.LPARAM) callconv(.c) c.LRESULT {
+fn wndProc(hwnd: ?win.HWND, msg: win.UINT, w_param: win.WPARAM, l_param: win.LPARAM) callconv(.winapi) win.LRESULT {
     switch (msg) {
-        c.WM_DESTROY => {
-            c.PostQuitMessage(0);
+        win.WM_DESTROY => {
+            win.PostQuitMessage(0);
             return 0;
         },
-        else => return c.DefWindowProcA(hwnd, msg, w_param, l_param),
+        else => return win.DefWindowProcA(hwnd, msg, w_param, l_param),
     }
 }
 
@@ -604,23 +693,24 @@ pub fn main() !void {
     var world = World.init();
     defer world.deinit(allocator);
 
-    const h_instance = c.GetModuleHandleA(null);
-    var wc: c.WNDCLASSA = std.mem.zeroes(c.WNDCLASSA);
-    wc.style = c.CS_HREDRAW | c.CS_VREDRAW;
+    const h_instance = win.GetModuleHandleA(null);
+    var wc: win.WNDCLASSA = std.mem.zeroes(win.WNDCLASSA);
+    wc.style = win.CS_HREDRAW | win.CS_VREDRAW;
     wc.lpfnWndProc = wndProc;
     wc.hInstance = h_instance;
     wc.lpszClassName = "ZigGameWindowClass";
-    wc.hCursor = c.LoadCursorA(null, c.IDC_ARROW);
+    wc.hCursor = win.LoadCursorA(null, win.IDC_ARROW);
 
-    if (c.RegisterClassA(&wc) == 0) return error.RegisterClassFailed;
+    if (wc.hCursor == null) return error.LoadCursorFailed;
+    if (win.RegisterClassA(&wc) == 0) return error.RegisterClassFailed;
 
-    const hwnd = c.CreateWindowExA(
+    const hwnd = win.CreateWindowExA(
         0,
         wc.lpszClassName,
         "Zig World UI",
-        c.WS_OVERLAPPEDWINDOW | c.WS_VISIBLE,
-        c.CW_USEDEFAULT,
-        c.CW_USEDEFAULT,
+        win.WS_OVERLAPPEDWINDOW | win.WS_VISIBLE,
+        win.CW_USEDEFAULT,
+        win.CW_USEDEFAULT,
         1200,
         800,
         null,
@@ -640,29 +730,29 @@ pub fn main() !void {
     var should_quit = false;
 
     while (!should_quit) {
-        var msg: c.MSG = undefined;
+        var msg: win.MSG = undefined;
         var click_pos: ?struct { x: i32, y: i32 } = null;
 
-        while (c.PeekMessageA(&msg, null, 0, 0, c.PM_REMOVE) != 0) {
-            if (msg.message == c.WM_QUIT) {
+        while (win.PeekMessageA(&msg, null, 0, 0, win.PM_REMOVE) != 0) {
+            if (msg.message == win.WM_QUIT) {
                 should_quit = true;
                 break;
             }
 
-            if (msg.message == c.WM_LBUTTONDOWN) {
-                var cursor: c.POINT = undefined;
-                _ = c.GetCursorPos(&cursor);
-                _ = c.ScreenToClient(hwnd, &cursor);
+            if (msg.message == win.WM_LBUTTONDOWN) {
+                var cursor: win.POINT = undefined;
+                _ = win.GetCursorPos(&cursor);
+                _ = win.ScreenToClient(hwnd, &cursor);
                 click_pos = .{ .x = cursor.x, .y = cursor.y };
             }
 
-            _ = c.TranslateMessage(&msg);
-            _ = c.DispatchMessageA(&msg);
+            _ = win.TranslateMessage(&msg);
+            _ = win.DispatchMessageA(&msg);
         }
 
-        var cursor: c.POINT = undefined;
-        _ = c.GetCursorPos(&cursor);
-        _ = c.ScreenToClient(hwnd, &cursor);
+        var cursor: win.POINT = undefined;
+        _ = win.GetCursorPos(&cursor);
+        _ = win.ScreenToClient(hwnd, &cursor);
         const mouse_x = cursor.x;
         const mouse_y = cursor.y;
 
@@ -688,14 +778,14 @@ pub fn main() !void {
             last_step_ms += 1000;
         }
 
-        const hdc = c.GetDC(hwnd);
-        defer _ = c.ReleaseDC(hwnd, hdc);
+        const hdc = win.GetDC(hwnd) orelse return error.GetDeviceContextFailed;
+        defer _ = win.ReleaseDC(hwnd, hdc);
 
-        var client_rect: c.RECT = undefined;
-        _ = c.GetClientRect(hwnd, &client_rect);
-        const bg = c.CreateSolidBrush(rgb(255, 255, 255));
-        defer _ = c.DeleteObject(bg);
-        _ = c.FillRect(hdc, &client_rect, bg);
+        var client_rect: win.RECT = undefined;
+        _ = win.GetClientRect(hwnd, &client_rect);
+        const bg = win.CreateSolidBrush(rgb(255, 255, 255)) orelse return error.CreateBrushFailed;
+        defer _ = win.DeleteObject(@ptrCast(bg));
+        _ = win.FillRect(hdc, &client_rect, bg);
 
         drawButton(hdc, pause_rect, if (ui.paused) "Play" else "Pause", rgb(230, 230, 230));
         drawButton(hdc, reset_rect, "Reset", rgb(230, 230, 230));
@@ -704,7 +794,34 @@ pub fn main() !void {
         const status = try std.fmt.bufPrint(&status_buf, "Tick: {d}  Total: {d}", .{ tick, world.totalPeople() });
         drawText(hdc, 260, 30, status);
 
-        if (ui.selected_place == null) {
+        if (ui.selected_place) |selected_place| {
+            drawButton(hdc, back_rect, "Back", rgb(230, 230, 230));
+            drawText(hdc, 130, 80, selected_place.asString());
+
+            drawText(hdc, 20, 130, "People in place:");
+            var y_people: i32 = 155;
+            for (world.people.items) |person| {
+                if (person.place != selected_place) continue;
+                var person_buf: [220]u8 = undefined;
+                const person_line = try std.fmt.bufPrint(&person_buf, "#{d} {s} {s} ({s})", .{ person.id, person.first_name, person.last_name, person.kind.asString() });
+                drawText(hdc, 30, y_people, person_line);
+                y_people += 18;
+            }
+
+            drawText(hdc, 620, 130, "Current connections:");
+            var y_conn: i32 = 155;
+            for (world.people.items) |person| {
+                const partner_id = person.connecting_to_id orelse continue;
+                if (person.place != selected_place or person.id >= partner_id) continue;
+                const partner = findPersonById(world.people.items, partner_id) orelse continue;
+                if (partner.place != selected_place) continue;
+
+                var conn_buf: [240]u8 = undefined;
+                const conn_line = try std.fmt.bufPrint(&conn_buf, "{s} {s} <-> {s} {s} ({s})", .{ person.first_name, person.last_name, partner.first_name, partner.last_name, @tagName(person.connection_type.?) });
+                drawText(hdc, 630, y_conn, conn_line);
+                y_conn += 18;
+            }
+        } else {
             var hovered_place: ?Place = null;
             var place_index: usize = 0;
             for (std.enums.values(Place)) |place| {
@@ -736,33 +853,6 @@ pub fn main() !void {
                 const info = try std.fmt.bufPrint(&info_buf, "Population: {d}   Capacity: {d}", .{ world.place_population[@intFromEnum(place)], World.place_capacity });
                 drawText(hdc, panel.x + 10, panel.y + 40, info);
                 drawText(hdc, panel.x + 10, panel.y + 70, "Click a place to inspect details");
-            }
-        } else |selected_place| {
-            drawButton(hdc, back_rect, "Back", rgb(230, 230, 230));
-            drawText(hdc, 130, 80, selected_place.asString());
-
-            drawText(hdc, 20, 130, "People in place:");
-            var y_people: i32 = 155;
-            for (world.people.items) |person| {
-                if (person.place != selected_place) continue;
-                var person_buf: [220]u8 = undefined;
-                const person_line = try std.fmt.bufPrint(&person_buf, "#{d} {s} {s} ({s})", .{ person.id, person.first_name, person.last_name, person.kind.asString() });
-                drawText(hdc, 30, y_people, person_line);
-                y_people += 18;
-            }
-
-            drawText(hdc, 620, 130, "Current connections:");
-            var y_conn: i32 = 155;
-            for (world.people.items) |person| {
-                const partner_id = person.connecting_to_id orelse continue;
-                if (person.place != selected_place or person.id >= partner_id) continue;
-                const partner = findPersonById(world.people.items, partner_id) orelse continue;
-                if (partner.place != selected_place) continue;
-
-                var conn_buf: [240]u8 = undefined;
-                const conn_line = try std.fmt.bufPrint(&conn_buf, "{s} {s} <-> {s} {s} ({s})", .{ person.first_name, person.last_name, partner.first_name, partner.last_name, @tagName(person.connection_type.?) });
-                drawText(hdc, 630, y_conn, conn_line);
-                y_conn += 18;
             }
         }
 
