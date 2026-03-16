@@ -716,6 +716,164 @@ fn drawButton(hdc: win.HDC, rect: Rect, label: []const u8, hovered: bool, theme:
     drawTextColored(hdc, rect.x + 10, rect.y + 10, label, theme.text);
 }
 
+fn clampI32(value: i32, min_value: i32, max_value: i32) i32 {
+    return @max(min_value, @min(value, max_value));
+}
+
+fn formatMoodLevels(buf: []u8, moods: MoodLevels) ![]const u8 {
+    return std.fmt.bufPrint(buf, "MoodLevels: warm {d}  energy {d}  happiness {d}", .{
+        moods.warm,
+        moods.energy,
+        moods.happiness,
+    });
+}
+
+fn formatKinkLevelsPrimary(buf: []u8, kinks: KinkLevels) ![]const u8 {
+    return std.fmt.bufPrint(buf, "KinkLevels: top {d}  front {d}  back {d}  wet {d}  covered {d}", .{
+        kinks.top,
+        kinks.front,
+        kinks.back,
+        kinks.wet,
+        kinks.covered,
+    });
+}
+
+fn formatKinkLevelsSecondary(buf: []u8, kinks: KinkLevels) ![]const u8 {
+    return std.fmt.bufPrint(buf, "            deep {d}  rough {d}  submit {d}  control {d}", .{
+        kinks.deep,
+        kinks.rough,
+        kinks.submit,
+        kinks.control,
+    });
+}
+
+fn formatSkillLevelsPrimary(buf: []u8, skills: SkillLevels) ![]const u8 {
+    return std.fmt.bufPrint(buf, "SkillLevels: top {d}  front {d}  back {d}  wet {d}  covered {d}", .{
+        skills.top,
+        skills.front,
+        skills.back,
+        skills.wet,
+        skills.covered,
+    });
+}
+
+fn formatSkillLevelsSecondary(buf: []u8, skills: SkillLevels) ![]const u8 {
+    return std.fmt.bufPrint(buf, "             deep {d}  rough {d}  submit {d}  control {d}", .{
+        skills.deep,
+        skills.rough,
+        skills.submit,
+        skills.control,
+    });
+}
+
+fn formatOwnedPeople(buf: []u8, owner_id: usize, people: []const Person) ![]const u8 {
+    var stream = std.io.fixedBufferStream(buf);
+    const writer = stream.writer();
+    var found_any = false;
+
+    for (people) |other| {
+        if (other.owned_by_id != owner_id) continue;
+
+        if (found_any) {
+            try writer.writeAll(", ");
+        }
+
+        try writer.print("{s} {s}", .{ other.first_name, other.last_name });
+        found_any = true;
+    }
+
+    if (!found_any) {
+        try writer.writeAll("no one");
+    }
+
+    return stream.getWritten();
+}
+
+fn drawPersonTooltip(
+    hdc: win.HDC,
+    client_rect: win.RECT,
+    mouse_x: i32,
+    mouse_y: i32,
+    person: Person,
+    people: []const Person,
+    theme: Theme,
+) !void {
+    const tooltip_w: i32 = 540;
+    const tooltip_h: i32 = 210;
+    const line_height: i32 = 18;
+    const tooltip_x = clampI32(mouse_x + 18, 10, client_rect.right - tooltip_w - 10);
+    const tooltip_y = clampI32(mouse_y + 18, 10, client_rect.bottom - tooltip_h - 10);
+    const tooltip_rect = Rect{ .x = tooltip_x, .y = tooltip_y, .w = tooltip_w, .h = tooltip_h };
+
+    drawFrame(hdc, tooltip_rect, theme.panel, theme.border);
+
+    var y = tooltip_rect.y + 10;
+
+    var name_buf: [96]u8 = undefined;
+    const name_line = try std.fmt.bufPrint(&name_buf, "{s} {s}", .{ person.first_name, person.last_name });
+    drawTextColored(hdc, tooltip_rect.x + 10, y, name_line, theme.text);
+    y += line_height;
+
+    var identity_buf: [128]u8 = undefined;
+    const identity_line = try std.fmt.bufPrint(&identity_buf, "Age {d}  Type {s}  ID #{d}", .{ person.age, person.kind.asString(), person.id });
+    drawTextColored(hdc, tooltip_rect.x + 10, y, identity_line, theme.text);
+    y += line_height;
+
+    var moods_buf: [128]u8 = undefined;
+    const moods_line = try formatMoodLevels(&moods_buf, person.moods);
+    drawTextColored(hdc, tooltip_rect.x + 10, y, moods_line, theme.text);
+    y += line_height;
+
+    var kinks_primary_buf: [160]u8 = undefined;
+    const kinks_primary_line = try formatKinkLevelsPrimary(&kinks_primary_buf, person.kinks);
+    drawTextColored(hdc, tooltip_rect.x + 10, y, kinks_primary_line, theme.text);
+    y += line_height;
+
+    var kinks_secondary_buf: [128]u8 = undefined;
+    const kinks_secondary_line = try formatKinkLevelsSecondary(&kinks_secondary_buf, person.kinks);
+    drawTextColored(hdc, tooltip_rect.x + 10, y, kinks_secondary_line, theme.text);
+    y += line_height;
+
+    var skills_primary_buf: [160]u8 = undefined;
+    const skills_primary_line = try formatSkillLevelsPrimary(&skills_primary_buf, person.skills);
+    drawTextColored(hdc, tooltip_rect.x + 10, y, skills_primary_line, theme.text);
+    y += line_height;
+
+    var skills_secondary_buf: [128]u8 = undefined;
+    const skills_secondary_line = try formatSkillLevelsSecondary(&skills_secondary_buf, person.skills);
+    drawTextColored(hdc, tooltip_rect.x + 10, y, skills_secondary_line, theme.text);
+    y += line_height;
+
+    var connection_buf: [160]u8 = undefined;
+    const connection_line = if (person.connecting_to_id) |partner_id| blk: {
+        const partner = findPersonById(people, partner_id) orelse
+            break :blk try std.fmt.bufPrint(&connection_buf, "Currently connecting: yes (unknown partner)", .{});
+        break :blk try std.fmt.bufPrint(&connection_buf, "Currently connecting: yes, with {s} {s} ({s})", .{
+            partner.first_name,
+            partner.last_name,
+            @tagName(person.connection_type orelse .top),
+        });
+    } else try std.fmt.bufPrint(&connection_buf, "Currently connecting: no", .{});
+    drawTextColored(hdc, tooltip_rect.x + 10, y, connection_line, theme.text);
+    y += line_height;
+
+    var owner_buf: [160]u8 = undefined;
+    const owner_line = if (person.owned_by_id) |owner_id| blk: {
+        const owner = findPersonById(people, owner_id) orelse
+            break :blk try std.fmt.bufPrint(&owner_buf, "Owned: yes, by unknown owner", .{});
+        break :blk try std.fmt.bufPrint(&owner_buf, "Owned: yes, by {s} {s}", .{ owner.first_name, owner.last_name });
+    } else try std.fmt.bufPrint(&owner_buf, "Owned: no", .{});
+    drawTextColored(hdc, tooltip_rect.x + 10, y, owner_line, theme.text);
+    y += line_height;
+
+    var owned_buf: [256]u8 = undefined;
+    const owned_names = try formatOwnedPeople(&owned_buf, person.id, people);
+
+    var owns_line_buf: [288]u8 = undefined;
+    const owns_line = try std.fmt.bufPrint(&owns_line_buf, "Owns: {s}", .{owned_names});
+    drawTextColored(hdc, tooltip_rect.x + 10, y, owns_line, theme.text);
+}
+
 fn wndProc(hwnd: ?win.HWND, msg: win.UINT, w_param: win.WPARAM, l_param: win.LPARAM) callconv(.winapi) win.LRESULT {
     switch (msg) {
         win.WM_DESTROY => {
@@ -856,8 +1014,13 @@ pub fn main() !void {
 
             drawTextColored(hdc, 20, 130, "People in place:", theme.text);
             var y_people: i32 = 155;
+            var hovered_person: ?Person = null;
             for (world.people.items) |person| {
                 if (person.place != selected_place) continue;
+                const person_rect = Rect{ .x = 24, .y = y_people - 2, .w = 560, .h = 18 };
+                if (person_rect.contains(mouse_x, mouse_y)) {
+                    hovered_person = person;
+                }
                 var person_buf: [220]u8 = undefined;
                 const person_line = try std.fmt.bufPrint(&person_buf, "#{d} {s} {s}, age {d} ({s})", .{ person.id, person.first_name, person.last_name, person.age, person.kind.asString() });
                 drawTextColored(hdc, 30, y_people, person_line, theme.text);
@@ -876,6 +1039,10 @@ pub fn main() !void {
                 const conn_line = try std.fmt.bufPrint(&conn_buf, "{s} {s} <-> {s} {s} ({s})", .{ person.first_name, person.last_name, partner.first_name, partner.last_name, @tagName(person.connection_type.?) });
                 drawTextColored(hdc, 630, y_conn, conn_line, theme.text);
                 y_conn += 18;
+            }
+
+            if (hovered_person) |person| {
+                try drawPersonTooltip(hdc, client_rect, mouse_x, mouse_y, person, world.people.items, theme);
             }
         } else {
             var hovered_place: ?Place = null;
