@@ -80,8 +80,11 @@ pub fn build(b: *std.Build) void {
                 // importing modules from different packages).
                 .{ .name = "zig_game", .module = mod },
             },
+            .link_libc = true,
         }),
     });
+
+    exe.linkSystemLibrary("X11");
 
     // This declares intent for the executable to be installed into the
     // install prefix when running `zig build` (i.e. when executing the default

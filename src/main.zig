@@ -1,4 +1,8 @@
 const std = @import("std");
+const c = @cImport({
+    @cInclude("X11/Xlib.h");
+    @cInclude("X11/Xutil.h");
+});
 
 const male_first_names = [_][]const u8{
     "James", "John", "Robert", "Michael", "David",
@@ -479,6 +483,87 @@ fn randomOwnedById(owned_kind: PersonType, owned_place: Place, people: []const P
     return selected_owner_id;
 }
 
+const Rect = struct {
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+
+    fn contains(self: Rect, px: i32, py: i32) bool {
+        return px >= self.x and px < self.x + self.w and py >= self.y and py < self.y + self.h;
+    }
+};
+
+const UiState = struct {
+    paused: bool = false,
+    selected_place: ?Place = null,
+};
+
+fn worldReset(world: *World, allocator: std.mem.Allocator) void {
+    world.people.clearRetainingCapacity();
+    world.place_population = [_]usize{0} ** 10;
+    world.male_count = 0;
+    world.female_count = 0;
+    world.futa_count = 0;
+    _ = allocator;
+}
+
+fn stepSimulation(world: *World, tick: *u64, random: std.Random, allocator: std.mem.Allocator) !void {
+    tick.* += 1;
+    const kind = randomPersonType(random);
+    const place = randomPlace(random);
+    const new_person = Person{
+        .id = world.totalPeople() + 1,
+        .first_name = randomFirstName(kind, random),
+        .last_name = randomLastName(random),
+        .kind = kind,
+        .place = place,
+        .moods = randomMoodLevels(random),
+        .kinks = randomKinkLevels(random),
+        .skills = randomSkillLevels(random),
+        .owned_by_id = randomOwnedById(kind, place, world.people.items, random),
+        .connecting_to_id = null,
+        .connection_type = null,
+    };
+
+    _ = try world.addPerson(new_person, allocator);
+    if (tick.* % 10 == 0) {
+        updateConnectionActivity(world, random);
+    }
+}
+
+fn findPersonById(people: []const Person, person_id: usize) ?Person {
+    for (people) |person| {
+        if (person.id == person_id) return person;
+    }
+
+    return null;
+}
+
+fn allocColor(display: ?*c.Display, color_name: [*:0]const u8) c_ulong {
+    const screen = c.DefaultScreen(display);
+    const colormap = c.DefaultColormap(display, screen);
+    var color: c.XColor = undefined;
+    var exact_color: c.XColor = undefined;
+    if (c.XAllocNamedColor(display, colormap, color_name, &color, &exact_color) == 0) {
+        return c.BlackPixel(display, screen);
+    }
+    return color.pixel;
+}
+
+fn drawText(display: ?*c.Display, window: c.Window, gc: c.GC, x: i32, y: i32, text: []const u8) void {
+    c.XDrawString(display, window, gc, x, y, text.ptr, @as(c_int, @intCast(text.len)));
+}
+
+fn drawButton(display: ?*c.Display, window: c.Window, gc: c.GC, rect: Rect, label: []const u8, fill: c_ulong, border: c_ulong, text: c_ulong) void {
+    c.XSetForeground(display, gc, fill);
+    c.XFillRectangle(display, window, gc, rect.x, rect.y, @as(c_uint, @intCast(rect.w)), @as(c_uint, @intCast(rect.h)));
+    c.XSetForeground(display, gc, border);
+    c.XDrawRectangle(display, window, gc, rect.x, rect.y, @as(c_uint, @intCast(rect.w)), @as(c_uint, @intCast(rect.h)));
+    c.XSetForeground(display, gc, text);
+    drawText(display, window, gc, rect.x + 10, rect.y + 25, label);
+}
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer {
@@ -492,86 +577,170 @@ pub fn main() !void {
     var world = World.init();
     defer world.deinit(allocator);
 
+    const display = c.XOpenDisplay(null) orelse return error.DisplayNotAvailable;
+    defer _ = c.XCloseDisplay(display);
+    const screen = c.DefaultScreen(display);
+    const root = c.RootWindow(display, screen);
+    const window = c.XCreateSimpleWindow(display, root, 50, 50, 1200, 800, 1, c.BlackPixel(display, screen), c.WhitePixel(display, screen));
+    _ = c.XStoreName(display, window, "Zig World UI");
+    _ = c.XSelectInput(display, window, c.ExposureMask | c.ButtonPressMask | c.PointerMotionMask | c.StructureNotifyMask);
+
+    const wm_delete = c.XInternAtom(display, "WM_DELETE_WINDOW", c.False);
+    _ = c.XSetWMProtocols(display, window, @ptrCast(&wm_delete), 1);
+
+    _ = c.XMapWindow(display, window);
+    const gc = c.XCreateGC(display, window, 0, null);
+    defer _ = c.XFreeGC(display, gc);
+
+    const black = c.BlackPixel(display, screen);
+    const white = c.WhitePixel(display, screen);
+    const light_gray = allocColor(display, "gray90");
+    const hover_gray = allocColor(display, "gray80");
+    const blue = allocColor(display, "lightblue");
+
     var seed: u64 = undefined;
     try std.posix.getrandom(std.mem.asBytes(&seed));
     var prng = std.Random.DefaultPrng.init(seed);
     const random = prng.random();
 
-    std.debug.print("Starting world simulation (1 new person/second). Press Ctrl+C to stop.\n", .{});
-
+    var ui = UiState{};
     var tick: u64 = 0;
-    while (true) {
-        tick += 1;
-        const kind = randomPersonType(random);
-        const place = randomPlace(random);
-        const new_person = Person{
-            .id = world.totalPeople() + 1,
-            .first_name = randomFirstName(kind, random),
-            .last_name = randomLastName(random),
-            .kind = kind,
-            .place = place,
-            .moods = randomMoodLevels(random),
-            .kinks = randomKinkLevels(random),
-            .skills = randomSkillLevels(random),
-            .owned_by_id = randomOwnedById(kind, place, world.people.items, random),
-            .connecting_to_id = null,
-            .connection_type = null,
-        };
+    var last_step_ms = std.time.milliTimestamp();
+    var should_quit = false;
+    while (!should_quit) {
+        var mouse_x: i32 = 0;
+        var mouse_y: i32 = 0;
+        var click_pos: ?struct { x: i32, y: i32 } = null;
 
-        const spawned = try world.addPerson(new_person, allocator);
-        if (!spawned) {
-            // std.debug.print(
-            //     "Tick: skipped spawning {s} {s} ({s}) at {s}; place is at capacity ({d})\n",
-            //     .{
-            //         new_person.first_name,
-            //         new_person.last_name,
-            //         new_person.kind.asString(),
-            //         new_person.place.asString(),
-            //         World.place_capacity,
-            //     },
-            // );
+        while (c.XPending(display) > 0) {
+            var event: c.XEvent = undefined;
+            _ = c.XNextEvent(display, &event);
+            switch (event.type) {
+                c.ClientMessage => {
+                    const atom = event.xclient.data.l[0];
+                    if (@as(c_ulong, @intCast(atom)) == wm_delete) {
+                        should_quit = true;
+                    }
+                },
+                c.ButtonPress => {
+                    if (event.xbutton.button == c.Button1) {
+                        click_pos = .{ .x = event.xbutton.x, .y = event.xbutton.y };
+                    }
+                },
+                else => {},
+            }
         }
 
-        // std.debug.print(
-        //     "Tick: created {s} {s} ({s}) at {s} [moods: warm={d}, energy={d}, happiness={d}; skills: top={d}, front={d}, back={d}, wet={d}, covered={d}, deep={d}, rough={d}, submit={d}, control={d}; kinks: top={d}, front={d}, back={d}, wet={d}, covered={d}, deep={d}, rough={d}, submit={d}, control={d}; owned_by_id={any}]\nTotal={d} [male={d}, female={d}, futa={d}]\n\n",
-        //     .{
-        //         new_person.first_name,
-        //         new_person.last_name,
-        //         new_person.kind.asString(),
-        //         new_person.place.asString(),
-        //         new_person.moods.warm,
-        //         new_person.moods.energy,
-        //         new_person.moods.happiness,
-        //         new_person.skills.top,
-        //         new_person.skills.front,
-        //         new_person.skills.back,
-        //         new_person.skills.wet,
-        //         new_person.skills.covered,
-        //         new_person.skills.deep,
-        //         new_person.skills.rough,
-        //         new_person.skills.submit,
-        //         new_person.skills.control,
-        //         new_person.kinks.top,
-        //         new_person.kinks.front,
-        //         new_person.kinks.back,
-        //         new_person.kinks.wet,
-        //         new_person.kinks.covered,
-        //         new_person.kinks.deep,
-        //         new_person.kinks.rough,
-        //         new_person.kinks.submit,
-        //         new_person.kinks.control,
-        //         new_person.owned_by_id,
-        //         world.totalPeople(),
-        //         world.male_count,
-        //         world.female_count,
-        //         world.futa_count,
-        //     },
-        // );
+        var root_return: c.Window = 0;
+        var child_return: c.Window = 0;
+        var root_x: c_int = 0;
+        var root_y: c_int = 0;
+        var win_x: c_int = 0;
+        var win_y: c_int = 0;
+        var mask: c_uint = 0;
+        _ = c.XQueryPointer(display, window, &root_return, &child_return, &root_x, &root_y, &win_x, &win_y, &mask);
+        mouse_x = win_x;
+        mouse_y = win_y;
 
-        if (tick % 10 == 0) {
-            updateConnectionActivity(&world, random);
+        const pause_rect = Rect{ .x = 20, .y = 20, .w = 110, .h = 35 };
+        const reset_rect = Rect{ .x = 145, .y = 20, .w = 90, .h = 35 };
+        const back_rect = Rect{ .x = 20, .y = 70, .w = 90, .h = 35 };
+
+        if (click_pos) |click| {
+            if (pause_rect.contains(click.x, click.y)) {
+                ui.paused = !ui.paused;
+            } else if (reset_rect.contains(click.x, click.y)) {
+                worldReset(&world, allocator);
+                tick = 0;
+                ui.selected_place = null;
+                last_step_ms = std.time.milliTimestamp();
+            } else if (ui.selected_place != null and back_rect.contains(click.x, click.y)) {
+                ui.selected_place = null;
+            }
         }
 
-        std.Thread.sleep(std.time.ns_per_s);
+        if (!ui.paused and std.time.milliTimestamp() - last_step_ms >= 1000) {
+            try stepSimulation(&world, &tick, random, allocator);
+            last_step_ms += 1000;
+        }
+
+        c.XSetForeground(display, gc, white);
+        c.XFillRectangle(display, window, gc, 0, 0, 1200, 800);
+        c.XSetForeground(display, gc, black);
+
+        drawButton(display, window, gc, pause_rect, if (ui.paused) "Play" else "Pause", light_gray, black, black);
+        drawButton(display, window, gc, reset_rect, "Reset", light_gray, black, black);
+
+        var status_buf: [128]u8 = undefined;
+        const status = try std.fmt.bufPrint(&status_buf, "Tick: {d}  Total: {d}", .{ tick, world.totalPeople() });
+        drawText(display, window, gc, 260, 42, status);
+
+        if (ui.selected_place == null) {
+            var hovered_place: ?Place = null;
+            var place_index: usize = 0;
+            for (std.enums.values(Place)) |place| {
+                const col = @as(i32, @intCast(place_index % 2));
+                const row = @as(i32, @intCast(place_index / 2));
+                const rect = Rect{ .x = 20 + col * 360, .y = 120 + row * 110, .w = 330, .h = 90 };
+                const is_hovered = rect.contains(mouse_x, mouse_y);
+                if (is_hovered) hovered_place = place;
+                drawButton(display, window, gc, rect, place.asString(), if (is_hovered) hover_gray else light_gray, black, black);
+
+                var pop_buf: [96]u8 = undefined;
+                const pop_text = try std.fmt.bufPrint(&pop_buf, "Population: {d}/{d}", .{ world.place_population[@intFromEnum(place)], World.place_capacity });
+                drawText(display, window, gc, rect.x + 10, rect.y + 50, pop_text);
+
+                if (click_pos) |click| {
+                    if (rect.contains(click.x, click.y)) {
+                        ui.selected_place = place;
+                    }
+                }
+                place_index += 1;
+            }
+
+            if (hovered_place) |place| {
+                const panel = Rect{ .x = 760, .y = 120, .w = 400, .h = 130 };
+                c.XSetForeground(display, gc, blue);
+                c.XFillRectangle(display, window, gc, panel.x, panel.y, @as(c_uint, @intCast(panel.w)), @as(c_uint, @intCast(panel.h)));
+                c.XSetForeground(display, gc, black);
+                c.XDrawRectangle(display, window, gc, panel.x, panel.y, @as(c_uint, @intCast(panel.w)), @as(c_uint, @intCast(panel.h)));
+                drawText(display, window, gc, panel.x + 10, panel.y + 30, place.asString());
+
+                var info_buf: [120]u8 = undefined;
+                const info = try std.fmt.bufPrint(&info_buf, "Population: {d}   Capacity: {d}", .{ world.place_population[@intFromEnum(place)], World.place_capacity });
+                drawText(display, window, gc, panel.x + 10, panel.y + 60, info);
+                drawText(display, window, gc, panel.x + 10, panel.y + 90, "Click a place to inspect details");
+            }
+        } else |selected_place| {
+            drawButton(display, window, gc, back_rect, "Back", light_gray, black, black);
+            drawText(display, window, gc, 130, 95, selected_place.asString());
+
+            drawText(display, window, gc, 20, 140, "People in place:");
+            var y_people: i32 = 165;
+            for (world.people.items) |person| {
+                if (person.place != selected_place) continue;
+                var person_buf: [220]u8 = undefined;
+                const person_line = try std.fmt.bufPrint(&person_buf, "#{d} {s} {s} ({s})", .{ person.id, person.first_name, person.last_name, person.kind.asString() });
+                drawText(display, window, gc, 30, y_people, person_line);
+                y_people += 20;
+            }
+
+            drawText(display, window, gc, 620, 140, "Current connections:");
+            var y_conn: i32 = 165;
+            for (world.people.items) |person| {
+                const partner_id = person.connecting_to_id orelse continue;
+                if (person.place != selected_place or person.id >= partner_id) continue;
+                const partner = findPersonById(world.people.items, partner_id) orelse continue;
+                if (partner.place != selected_place) continue;
+
+                var conn_buf: [240]u8 = undefined;
+                const conn_line = try std.fmt.bufPrint(&conn_buf, "{s} {s} ↔ {s} {s} ({s})", .{ person.first_name, person.last_name, partner.first_name, partner.last_name, @tagName(person.connection_type.?) });
+                drawText(display, window, gc, 630, y_conn, conn_line);
+                y_conn += 20;
+            }
+        }
+
+        c.XFlush(display);
+        std.Thread.sleep(16 * std.time.ns_per_ms);
     }
 }
