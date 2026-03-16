@@ -200,6 +200,11 @@ const Connection = struct {
     stick_has_control: bool,
 };
 
+const ConnectionGroup = struct {
+    stick_person_id: usize,
+    cave_person_id: usize,
+};
+
 const Person = struct {
     id: usize,
     first_name: []const u8,
@@ -648,7 +653,7 @@ fn updateConnectionActivity(world: *World, random: std.Random, allocator: std.me
         if (connection_count == 0) {
             world.people.items[i].moods.energy = clampStat(@as(u16, person.moods.energy) + 2);
             const increase = connectablePeopleCount(person, world.people.items, world.connections.items);
-            world.people.items[i].moods.warm = clampStat(@as(u16, person.moods.warm) + increase);
+            world.people.items[i].moods.warm = clampStat(@as(u16, person.moods.warm) + increase + increase + increase);
             continue;
         }
 
@@ -1061,6 +1066,152 @@ fn personHasControlledCaveConnection(person_id: usize, connections: []const Conn
     return false;
 }
 
+fn caveTypeLabel(cave_type: CaveType) []const u8 {
+    return switch (cave_type) {
+        .top => "top",
+        .front => "front",
+        .back => "back",
+    };
+}
+
+fn connectionGroupMatches(group: ConnectionGroup, connection: Connection) bool {
+    return connection.stick_person_id == group.stick_person_id and
+        connection.cave_person_id == group.cave_person_id;
+}
+
+fn isConnectionGroupFirstOccurrence(connections: []const Connection, index: usize) bool {
+    const target = connections[index];
+    for (connections[0..index]) |existing| {
+        if (existing.stick_person_id == target.stick_person_id and existing.cave_person_id == target.cave_person_id) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+fn countConnectionGroup(group: ConnectionGroup, connections: []const Connection) u8 {
+    var count: u8 = 0;
+    for (connections) |connection| {
+        if (connectionGroupMatches(group, connection)) {
+            count += 1;
+        }
+    }
+
+    return count;
+}
+
+fn skillLevelForConnection(person: Person, cave_type: CaveType, is_cave_person: bool, stick_has_control: bool) u8 {
+    if (is_cave_person and stick_has_control) {
+        return person.skills.submit;
+    }
+
+    return caveSkillLevel(&person.skills, cave_type);
+}
+
+fn kinkLevelForConnection(person: Person, cave_type: CaveType, is_cave_person: bool, stick_has_control: bool) u8 {
+    if (is_cave_person and stick_has_control) {
+        return person.kinks.submit;
+    }
+
+    if (!is_cave_person and stick_has_control) {
+        return person.kinks.control;
+    }
+
+    return caveKinkLevel(&person.kinks, cave_type);
+}
+
+fn drawConnectionGroupTooltip(
+    hdc: win.HDC,
+    client_rect: win.RECT,
+    mouse_x: i32,
+    mouse_y: i32,
+    group: ConnectionGroup,
+    people: []const Person,
+    connections: []const Connection,
+    theme: Theme,
+) !void {
+    const stick = findPersonById(people, group.stick_person_id) orelse return;
+    const cave = findPersonById(people, group.cave_person_id) orelse return;
+    const group_count = countConnectionGroup(group, connections);
+    const line_height: i32 = 18;
+    const padding: i32 = 10;
+    const tooltip_w: i32 = 700;
+    const header_lines: i32 = 3;
+    const lines_per_connection: i32 = 3;
+    const tooltip_h: i32 = padding * 2 + (header_lines + (@as(i32, group_count) * lines_per_connection)) * line_height;
+    const tooltip_x = clampI32(mouse_x + 18, 10, client_rect.right - tooltip_w - 10);
+    const tooltip_y = clampI32(mouse_y + 18, 10, client_rect.bottom - tooltip_h - 10);
+    const tooltip_rect = Rect{ .x = tooltip_x, .y = tooltip_y, .w = tooltip_w, .h = tooltip_h };
+
+    drawFrame(hdc, tooltip_rect, theme.panel, theme.border);
+
+    var y = tooltip_rect.y + padding;
+
+    var title_buf: [160]u8 = undefined;
+    const title_line = try std.fmt.bufPrint(&title_buf, "{s} {s} -> {s} {s}", .{
+        stick.first_name,
+        stick.last_name,
+        cave.first_name,
+        cave.last_name,
+    });
+    drawTextColored(hdc, tooltip_rect.x + padding, y, title_line, theme.text);
+    y += line_height;
+
+    var summary_buf: [160]u8 = undefined;
+    const summary_line = try std.fmt.bufPrint(&summary_buf, "Grouped connections: {d}", .{group_count});
+    drawTextColored(hdc, tooltip_rect.x + padding, y, summary_line, theme.text);
+    y += line_height;
+
+    var mood_buf: [256]u8 = undefined;
+    const mood_line = try std.fmt.bufPrint(&mood_buf, "Moods  stick W/E/H {d}/{d}/{d}  cave W/E/H {d}/{d}/{d}", .{
+        stick.moods.warm,
+        stick.moods.energy,
+        stick.moods.happiness,
+        cave.moods.warm,
+        cave.moods.energy,
+        cave.moods.happiness,
+    });
+    drawTextColored(hdc, tooltip_rect.x + padding, y, mood_line, theme.text);
+    y += line_height;
+
+    var connection_index: u8 = 1;
+    for (connections) |connection| {
+        if (!connectionGroupMatches(group, connection)) continue;
+
+        var type_buf: [192]u8 = undefined;
+        const type_line = try std.fmt.bufPrint(&type_buf, "#{d} {s}  control {s}", .{
+            connection_index,
+            caveTypeLabel(connection.cave_type),
+            if (connection.stick_has_control) "yes" else "no",
+        });
+        drawTextColored(hdc, tooltip_rect.x + padding, y, type_line, theme.text);
+        y += line_height;
+
+        var skill_buf: [320]u8 = undefined;
+        const skill_line = try std.fmt.bufPrint(&skill_buf, "Skills  stick {s} {d}  cave {s} {d}", .{
+            if (connection.stick_has_control) "control" else caveTypeLabel(connection.cave_type),
+            skillLevelForConnection(stick, connection.cave_type, false, connection.stick_has_control),
+            if (connection.stick_has_control) "submit" else caveTypeLabel(connection.cave_type),
+            skillLevelForConnection(cave, connection.cave_type, true, connection.stick_has_control),
+        });
+        drawTextColored(hdc, tooltip_rect.x + padding, y, skill_line, theme.text);
+        y += line_height;
+
+        var kink_buf: [320]u8 = undefined;
+        const kink_line = try std.fmt.bufPrint(&kink_buf, "Kinks   stick {s} {d}  cave {s} {d}", .{
+            if (connection.stick_has_control) "control" else caveTypeLabel(connection.cave_type),
+            kinkLevelForConnection(stick, connection.cave_type, false, connection.stick_has_control),
+            if (connection.stick_has_control) "submit" else caveTypeLabel(connection.cave_type),
+            kinkLevelForConnection(cave, connection.cave_type, true, connection.stick_has_control),
+        });
+        drawTextColored(hdc, tooltip_rect.x + padding, y, kink_line, theme.text);
+        y += line_height;
+
+        connection_index += 1;
+    }
+}
+
 fn drawPersonTooltip(
     hdc: win.HDC,
     client_rect: win.RECT,
@@ -1302,24 +1453,35 @@ pub fn main() !void {
 
             drawTextColored(hdc, 620, 130, "Current connections:", theme.text);
             var y_conn: i32 = 155;
-            for (world.connections.items) |connection| {
+            var hovered_connection_group: ?ConnectionGroup = null;
+            for (world.connections.items, 0..) |connection, connection_index| {
+                if (!isConnectionGroupFirstOccurrence(world.connections.items, connection_index)) continue;
+
                 const stick = findPersonById(world.people.items, connection.stick_person_id) orelse continue;
                 const cave = findPersonById(world.people.items, connection.cave_person_id) orelse continue;
                 if (stick.place != selected_place or cave.place != selected_place) continue;
 
-                var conn_type_buf: [48]u8 = undefined;
-                const conn_type = if (connection.stick_has_control)
-                    try std.fmt.bufPrint(&conn_type_buf, "{s}, control", .{@tagName(connection.cave_type)})
-                else
-                    @tagName(connection.cave_type);
+                const group = ConnectionGroup{
+                    .stick_person_id = connection.stick_person_id,
+                    .cave_person_id = connection.cave_person_id,
+                };
+                const connection_rect = Rect{ .x = 624, .y = y_conn - 2, .w = 520, .h = 18 };
+                const is_hovered = connection_rect.contains(mouse_x, mouse_y);
+                if (is_hovered) {
+                    hovered_connection_group = group;
+                }
 
-                var conn_buf: [240]u8 = undefined;
-                const conn_line = try std.fmt.bufPrint(&conn_buf, "{s} {s} -> {s} {s} ({s})", .{
+                if (is_hovered) {
+                    fillRectColor(hdc, connection_rect, theme.button_hover);
+                }
+
+                var conn_buf: [256]u8 = undefined;
+                const conn_line = try std.fmt.bufPrint(&conn_buf, "{s} {s} -> {s} {s} ({d} grouped)", .{
                     stick.first_name,
                     stick.last_name,
                     cave.first_name,
                     cave.last_name,
-                    conn_type,
+                    countConnectionGroup(group, world.connections.items),
                 });
                 drawTextColored(hdc, 630, y_conn, conn_line, theme.text);
                 y_conn += 18;
@@ -1327,6 +1489,10 @@ pub fn main() !void {
 
             if (hovered_person) |person| {
                 try drawPersonTooltip(hdc, client_rect, mouse_x, mouse_y, person, world.people.items, world.connections.items, theme);
+            }
+
+            if (hovered_connection_group) |group| {
+                try drawConnectionGroupTooltip(hdc, client_rect, mouse_x, mouse_y, group, world.people.items, world.connections.items, theme);
             }
         } else {
             var hovered_place: ?Place = null;
