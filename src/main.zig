@@ -18,6 +18,7 @@ const win = struct {
     const HWND = windows.HWND;
     const HDC = windows.HDC;
     const HBRUSH = windows.HBRUSH;
+    const HBITMAP = *opaque {};
     const HCURSOR = windows.HCURSOR;
     const HMENU = windows.HMENU;
     const POINT = windows.POINT;
@@ -57,9 +58,11 @@ const win = struct {
     const CW_USEDEFAULT: i32 = @as(i32, @bitCast(@as(u32, 0x80000000)));
     const PM_REMOVE: UINT = 0x0001;
     const WM_DESTROY: UINT = 0x0002;
+    const WM_ERASEBKGND: UINT = 0x0014;
     const WM_QUIT: UINT = 0x0012;
     const WM_LBUTTONDOWN: UINT = 0x0201;
     const BLACK_BRUSH: i32 = 4;
+    const SRCCOPY: u32 = 0x00CC0020;
     const TRANSPARENT: i32 = 1;
     const IDC_ARROW: [*:0]const u8 = @ptrFromInt(32512);
 
@@ -93,11 +96,16 @@ const win = struct {
     extern "user32" fn FillRect(hDC: HDC, lprc: *const RECT, hbr: HBRUSH) callconv(.winapi) i32;
     extern "user32" fn FrameRect(hDC: HDC, lprc: *const RECT, hbr: HBRUSH) callconv(.winapi) i32;
     extern "gdi32" fn CreateSolidBrush(color: COLORREF) callconv(.winapi) ?HBRUSH;
+    extern "gdi32" fn CreateCompatibleDC(hdc: HDC) callconv(.winapi) ?HDC;
+    extern "gdi32" fn CreateCompatibleBitmap(hdc: HDC, cx: i32, cy: i32) callconv(.winapi) ?HBITMAP;
     extern "gdi32" fn DeleteObject(ho: HGDIOBJ) callconv(.winapi) BOOL;
+    extern "gdi32" fn DeleteDC(hdc: HDC) callconv(.winapi) BOOL;
     extern "gdi32" fn GetStockObject(index: i32) callconv(.winapi) ?HGDIOBJ;
+    extern "gdi32" fn SelectObject(hdc: HDC, h: HGDIOBJ) callconv(.winapi) ?HGDIOBJ;
     extern "gdi32" fn SetTextColor(hdc: HDC, color: COLORREF) callconv(.winapi) COLORREF;
     extern "gdi32" fn SetBkMode(hdc: HDC, mode: i32) callconv(.winapi) i32;
     extern "gdi32" fn TextOutA(hdc: HDC, x: i32, y: i32, text: [*]const u8, len: i32) callconv(.winapi) BOOL;
+    extern "gdi32" fn BitBlt(hdc: HDC, x: i32, y: i32, cx: i32, cy: i32, hdc_src: HDC, x1: i32, y1: i32, rop: u32) callconv(.winapi) BOOL;
 };
 
 const male_first_names = [_][]const u8{
@@ -158,33 +166,33 @@ const PersonType = enum(u8) {
 };
 
 const MoodLevels = struct {
-    warm: u8,
-    energy: u8,
-    happiness: u8,
+    warm: f32,
+    energy: f32,
+    happiness: f32,
 };
 
 const KinkLevels = struct {
-    top: u8,
-    front: u8,
-    back: u8,
-    wet: u8,
-    covered: u8,
-    deep: u8,
-    rough: u8,
-    submit: u8,
-    control: u8,
+    top: f32,
+    front: f32,
+    back: f32,
+    wet: f32,
+    covered: f32,
+    deep: f32,
+    rough: f32,
+    submit: f32,
+    control: f32,
 };
 
 const SkillLevels = struct {
-    top: u8,
-    front: u8,
-    back: u8,
-    wet: u8,
-    covered: u8,
-    deep: u8,
-    rough: u8,
-    submit: u8,
-    control: u8,
+    top: f32,
+    front: f32,
+    back: f32,
+    wet: f32,
+    covered: f32,
+    deep: f32,
+    rough: f32,
+    submit: f32,
+    control: f32,
 };
 
 const CaveType = enum {
@@ -204,6 +212,12 @@ const ConnectionGroup = struct {
     cave_person_id: usize,
 };
 
+const ticks_per_second: u64 = 10;
+const step_interval_ms = 1000 / ticks_per_second;
+const old_connection_update_interval_seconds: f32 = 10.0;
+const new_connection_update_interval_seconds: f32 = 1.0 / @as(f32, ticks_per_second);
+const connection_rate_scale: f32 = new_connection_update_interval_seconds / old_connection_update_interval_seconds;
+
 const Person = struct {
     id: usize,
     first_name: []const u8,
@@ -218,7 +232,7 @@ const Person = struct {
 };
 
 const World = struct {
-    const place_capacity: usize = 50;
+    const place_capacity: usize = 100;
 
     people: std.ArrayList(Person),
     connections: std.ArrayList(Connection),
@@ -268,8 +282,8 @@ const World = struct {
 
 fn randomPersonType(random: std.Random) PersonType {
     const person_type: u8 = random.uintLessThan(u8, 100);
-    if (person_type < 70) return .male;
-    if (person_type < 95) return .female;
+    if (person_type < 90) return .male;
+    if (person_type < 98) return .female;
     return .futa;
 }
 
@@ -294,8 +308,8 @@ fn randomPlace(random: std.Random) Place {
     return @enumFromInt(random.uintLessThan(u8, 10));
 }
 
-fn randomLevel(random: std.Random) u8 {
-    return random.uintLessThan(u8, 101);
+fn randomLevel(random: std.Random) f32 {
+    return @as(f32, @floatFromInt(random.uintLessThan(u8, 101)));
 }
 
 fn randomMoodLevels(random: std.Random) MoodLevels {
@@ -334,8 +348,8 @@ fn randomSkillLevels(random: std.Random) SkillLevels {
     };
 }
 
-fn clampStat(value: u16) u8 {
-    return @as(u8, @intCast(@min(value, 100)));
+fn clampStat(value: f32) f32 {
+    return @max(0.0, @min(value, 100.0));
 }
 
 fn hasStick(kind: PersonType) bool {
@@ -346,7 +360,7 @@ fn hasCaves(kind: PersonType) bool {
     return kind == .female or kind == .futa;
 }
 
-fn caveCapacity(skill: u8, cave_type: CaveType) u8 {
+fn caveCapacity(skill: f32, cave_type: CaveType) u8 {
     return switch (cave_type) {
         .top => if (skill >= 50) 2 else 1,
         .front, .back => if (skill >= 67) 3 else if (skill >= 34) 2 else 1,
@@ -357,7 +371,7 @@ fn ownerOwnedPair(person: Person, other: Person) bool {
     return person.owned_by_id == other.id or other.owned_by_id == person.id;
 }
 
-fn caveSkillLevel(levels: *const SkillLevels, cave_type: CaveType) u8 {
+fn caveSkillLevel(levels: *const SkillLevels, cave_type: CaveType) f32 {
     return switch (cave_type) {
         .top => levels.top,
         .front => levels.front,
@@ -365,7 +379,7 @@ fn caveSkillLevel(levels: *const SkillLevels, cave_type: CaveType) u8 {
     };
 }
 
-fn caveSkillLevelPtr(levels: *SkillLevels, cave_type: CaveType) *u8 {
+fn caveSkillLevelPtr(levels: *SkillLevels, cave_type: CaveType) *f32 {
     return switch (cave_type) {
         .top => &levels.top,
         .front => &levels.front,
@@ -373,7 +387,7 @@ fn caveSkillLevelPtr(levels: *SkillLevels, cave_type: CaveType) *u8 {
     };
 }
 
-fn caveKinkLevel(levels: *const KinkLevels, cave_type: CaveType) u8 {
+fn caveKinkLevel(levels: *const KinkLevels, cave_type: CaveType) f32 {
     return switch (cave_type) {
         .top => levels.top,
         .front => levels.front,
@@ -381,7 +395,7 @@ fn caveKinkLevel(levels: *const KinkLevels, cave_type: CaveType) u8 {
     };
 }
 
-fn caveKinkLevelPtr(levels: *KinkLevels, cave_type: CaveType) *u8 {
+fn caveKinkLevelPtr(levels: *KinkLevels, cave_type: CaveType) *f32 {
     return switch (cave_type) {
         .top => &levels.top,
         .front => &levels.front,
@@ -390,8 +404,8 @@ fn caveKinkLevelPtr(levels: *KinkLevels, cave_type: CaveType) *u8 {
 }
 
 fn controlChance(stick_person: Person, cave_person: Person) f64 {
-    const product = @as(f64, @floatFromInt(stick_person.kinks.control)) *
-        @as(f64, @floatFromInt(cave_person.kinks.submit));
+    const product = @as(f64, stick_person.kinks.control) *
+        @as(f64, cave_person.kinks.submit);
     return product / 10000.0;
 }
 
@@ -500,6 +514,12 @@ fn personCanAttemptConnection(person: Person, other: Person, connections: []cons
     return person.moods.energy >= 50 and other.moods.energy >= 50;
 }
 
+fn chancePerCheck(old_chance: f64) f64 {
+    if (old_chance <= 0) return 0;
+    if (old_chance >= 1) return 1;
+    return 1.0 - std.math.pow(f64, 1.0 - old_chance, @as(f64, connection_rate_scale));
+}
+
 fn connectablePeopleCount(person: Person, people: []const Person, connections: []const Connection) u8 {
     var count: u8 = 0;
     for (people) |other| {
@@ -571,11 +591,11 @@ fn chooseConnectionProposal(
         const weight = if (ownerOwnedPair(person, other))
             blk: {
                 const owner = if (other.owned_by_id == person.id) person else other;
-                break :blk @as(f64, @floatFromInt(caveKinkLevel(&owner.kinks, proposal.cave_type))) / 100.0;
+                break :blk @as(f64, caveKinkLevel(&owner.kinks, proposal.cave_type)) / 100.0;
             }
         else blk: {
-            const stick_weight = (@as(f64, @floatFromInt(caveKinkLevel(&stick_person.kinks, proposal.cave_type))) / 100.0) * 0.5;
-            const cave_weight = (@as(f64, @floatFromInt(caveKinkLevel(&cave_person.kinks, proposal.cave_type))) / 100.0) * 0.25;
+            const stick_weight = (@as(f64, caveKinkLevel(&stick_person.kinks, proposal.cave_type)) / 100.0) * 0.5;
+            const cave_weight = (@as(f64, caveKinkLevel(&cave_person.kinks, proposal.cave_type)) / 100.0) * 0.25;
             break :blk stick_weight * cave_weight;
         };
 
@@ -620,16 +640,16 @@ fn clearAllConnectionsForPerson(world: *World, person_id: usize) void {
             }
         }
 
-        if (stick != null and cave != null) {
-            std.debug.print("Tick: {s} {s} disconnected from {s} {s} ({s}, control {s}); warm reset to 0\n", .{
-                stick.?.first_name,
-                stick.?.last_name,
-                cave.?.first_name,
-                cave.?.last_name,
-                @tagName(connection.cave_type),
-                if (connection.stick_has_control) "yes" else "no",
-            });
-        }
+        // if (stick != null and cave != null) {
+        //     std.debug.print("Tick: {s} {s} disconnected from {s} {s} ({s}, control {s}); warm reset to 0\n", .{
+        //         stick.?.first_name,
+        //         stick.?.last_name,
+        //         cave.?.first_name,
+        //         cave.?.last_name,
+        //         @tagName(connection.cave_type),
+        //         if (connection.stick_has_control) "yes" else "no",
+        //     });
+        // }
 
         _ = world.connections.swapRemove(i);
     }
@@ -640,8 +660,8 @@ fn updateConnectionActivity(world: *World, random: std.Random, allocator: std.me
         const stick_index = findPersonIndexById(world.people.items, connection.stick_person_id) orelse continue;
         const cave_index = findPersonIndexById(world.people.items, connection.cave_person_id) orelse continue;
 
-        world.people.items[stick_index].moods.energy = world.people.items[stick_index].moods.energy -| 3;
-        world.people.items[cave_index].moods.energy = world.people.items[cave_index].moods.energy -| 3;
+        world.people.items[stick_index].moods.energy = clampStat(world.people.items[stick_index].moods.energy - (3.0 * connection_rate_scale));
+        world.people.items[cave_index].moods.energy = clampStat(world.people.items[cave_index].moods.energy - (3.0 * connection_rate_scale));
 
         increaseConnectionHappiness(world, stick_index, cave_index);
         increaseConnectionHappiness(world, cave_index, stick_index);
@@ -650,13 +670,13 @@ fn updateConnectionActivity(world: *World, random: std.Random, allocator: std.me
     for (world.people.items, 0..) |person, i| {
         const connection_count = personConnectionCount(person.id, world.connections.items);
         if (connection_count == 0) {
-            world.people.items[i].moods.energy = clampStat(@as(u16, person.moods.energy) + 2);
+            world.people.items[i].moods.energy = clampStat(person.moods.energy + (2.0 * connection_rate_scale));
             const increase = connectablePeopleCount(person, world.people.items, world.connections.items);
-            world.people.items[i].moods.warm = clampStat(@as(u16, person.moods.warm) + increase + increase + increase);
+            world.people.items[i].moods.warm = clampStat(person.moods.warm + (@as(f32, @floatFromInt(increase)) * (3.0 * connection_rate_scale)));
             continue;
         }
 
-        if (personEndsConnectionsFromEnergy(person.id, world.connections.items) and world.people.items[i].moods.energy == 0) {
+        if (personEndsConnectionsFromEnergy(person.id, world.connections.items) and world.people.items[i].moods.energy <= 0.0) {
             clearAllConnectionsForPerson(world, person.id);
             continue;
         }
@@ -664,16 +684,14 @@ fn updateConnectionActivity(world: *World, random: std.Random, allocator: std.me
         if (personHasStickConnection(person.id, world.connections.items)) {
             if (findStickConnection(world.connections.items, person.id)) |connection| {
                 const skill = caveSkillLevelPtr(&world.people.items[i].skills, connection.cave_type);
-                skill.* = clampStat(@as(u16, skill.*) + 2);
+                skill.* = clampStat(skill.* + (2.0 * connection_rate_scale));
 
                 if (connection.stick_has_control) {
-                    world.people.items[i].skills.control = clampStat(@as(u16, world.people.items[i].skills.control) + 1);
+                    world.people.items[i].skills.control = clampStat(world.people.items[i].skills.control + (1.0 * connection_rate_scale));
                 }
 
-                if (random.boolean()) {
-                    const kink = caveKinkLevelPtr(&world.people.items[i].kinks, connection.cave_type);
-                    kink.* = clampStat(@as(u16, kink.*) + 1);
-                }
+                const kink = caveKinkLevelPtr(&world.people.items[i].kinks, connection.cave_type);
+                kink.* = clampStat(kink.* + (0.5 * connection_rate_scale));
             }
         }
 
@@ -685,7 +703,7 @@ fn updateConnectionActivity(world: *World, random: std.Random, allocator: std.me
                 }
 
                 const skill = caveSkillLevelPtr(&world.people.items[i].skills, cave_type);
-                skill.* = clampStat(@as(u16, skill.*) + (@as(u16, occupancy) * 2));
+                skill.* = clampStat(skill.* + (@as(f32, @floatFromInt(occupancy)) * (2.0 * connection_rate_scale)));
 
                 var controlled_occupancy: u8 = 0;
                 for (world.connections.items) |connection| {
@@ -694,13 +712,11 @@ fn updateConnectionActivity(world: *World, random: std.Random, allocator: std.me
                     }
                 }
                 if (controlled_occupancy > 0) {
-                    world.people.items[i].skills.submit = clampStat(@as(u16, world.people.items[i].skills.submit) + controlled_occupancy);
+                    world.people.items[i].skills.submit = clampStat(world.people.items[i].skills.submit + (@as(f32, @floatFromInt(controlled_occupancy)) * connection_rate_scale));
                 }
 
-                if (random.boolean()) {
-                    const kink = caveKinkLevelPtr(&world.people.items[i].kinks, cave_type);
-                    kink.* = clampStat(@as(u16, kink.*) + occupancy);
-                }
+                const kink = caveKinkLevelPtr(&world.people.items[i].kinks, cave_type);
+                kink.* = clampStat(kink.* + (@as(f32, @floatFromInt(occupancy)) * (0.5 * connection_rate_scale)));
             }
         }
     }
@@ -722,9 +738,9 @@ fn updateConnectionActivity(world: *World, random: std.Random, allocator: std.me
             const should_connect = if (ownerOwnedPair(person, other))
                 true
             else blk: {
-                const odds = (@as(f64, @floatFromInt(person.moods.warm)) / 100.0) *
-                    (@as(f64, @floatFromInt(other.moods.warm)) / 100.0);
-                break :blk random.float(f64) < odds;
+                const odds = (@as(f64, person.moods.warm) / 100.0) *
+                    (@as(f64, other.moods.warm) / 100.0);
+                break :blk random.float(f64) < chancePerCheck(odds);
             };
 
             if (!should_connect) {
@@ -742,14 +758,14 @@ fn updateConnectionActivity(world: *World, random: std.Random, allocator: std.me
                 .stick_has_control = stick_has_control,
             });
 
-            std.debug.print("Tick: {s} {s} connected to {s} {s} ({s}, control {s})\n", .{
-                stick.first_name,
-                stick.last_name,
-                cave.first_name,
-                cave.last_name,
-                @tagName(proposal.cave_type),
-                if (stick_has_control) "yes" else "no",
-            });
+            // std.debug.print("Tick: {s} {s} connected to {s} {s} ({s}, control {s})\n", .{
+            //     stick.first_name,
+            //     stick.last_name,
+            //     cave.first_name,
+            //     cave.last_name,
+            //     @tagName(proposal.cave_type),
+            //     if (stick_has_control) "yes" else "no",
+            // });
             break;
         }
     }
@@ -819,16 +835,15 @@ fn findStickConnection(connections: []const Connection, person_id: usize) ?Conne
 }
 
 fn increaseConnectionHappiness(world: *World, primary_index: usize, other_index: usize) void {
-    const boosted = clampStat(@as(u16, world.people.items[primary_index].moods.happiness) + 10);
+    const boosted = clampStat(world.people.items[primary_index].moods.happiness + (10.0 * connection_rate_scale));
     world.people.items[primary_index].moods.happiness = boosted;
 
-    if (boosted < 100) {
+    if (boosted < 100.0) {
         return;
     }
 
-    world.people.items[primary_index].moods.happiness = 0;
-    world.people.items[primary_index].moods.happiness = clampStat(@as(u16, world.people.items[primary_index].moods.happiness) + 10);
-    world.people.items[other_index].moods.happiness = clampStat(@as(u16, world.people.items[other_index].moods.happiness) + 10);
+    world.people.items[primary_index].moods.happiness = 10.0 * connection_rate_scale;
+    world.people.items[other_index].moods.happiness = clampStat(world.people.items[other_index].moods.happiness + (10.0 * connection_rate_scale));
 }
 
 fn personEndsConnectionsFromEnergy(person_id: usize, connections: []const Connection) bool {
@@ -928,25 +943,26 @@ fn prefillPlaces(world: *World, random: std.Random, allocator: std.mem.Allocator
 
 fn stepSimulation(world: *World, tick: *u64, random: std.Random, allocator: std.mem.Allocator) !void {
     tick.* += 1;
-    const kind = randomPersonType(random);
-    const place = randomPlace(random);
-    const new_person = Person{
-        .id = world.totalPeople() + 1,
-        .first_name = randomFirstName(kind, random),
-        .last_name = randomLastName(random),
-        .age = randomAge(random),
-        .kind = kind,
-        .place = place,
-        .moods = randomMoodLevels(random),
-        .kinks = randomKinkLevels(random),
-        .skills = randomSkillLevels(random),
-        .owned_by_id = randomOwnedById(kind, place, world.people.items, random),
-    };
+    if (tick.* % ticks_per_second == 0) {
+        const kind = randomPersonType(random);
+        const place = randomPlace(random);
+        const new_person = Person{
+            .id = world.totalPeople() + 1,
+            .first_name = randomFirstName(kind, random),
+            .last_name = randomLastName(random),
+            .age = randomAge(random),
+            .kind = kind,
+            .place = place,
+            .moods = randomMoodLevels(random),
+            .kinks = randomKinkLevels(random),
+            .skills = randomSkillLevels(random),
+            .owned_by_id = randomOwnedById(kind, place, world.people.items, random),
+        };
 
-    _ = try world.addPerson(new_person, allocator);
-    if (tick.* % 10 == 0) {
-        try updateConnectionActivity(world, random, allocator);
+        _ = try world.addPerson(new_person, allocator);
     }
+
+    try updateConnectionActivity(world, random, allocator);
 }
 
 fn rgb(r: u8, g: u8, b: u8) win.COLORREF {
@@ -997,16 +1013,39 @@ fn clampI32(value: i32, min_value: i32, max_value: i32) i32 {
     return @max(min_value, @min(value, max_value));
 }
 
-fn formatMoodLevels(buf: []u8, moods: MoodLevels) ![]const u8 {
-    return std.fmt.bufPrint(buf, "MoodLevels: warm {d}  energy {d}  happiness {d}", .{
-        moods.warm,
-        moods.energy,
-        moods.happiness,
-    });
+fn moodColor(value: f32) win.COLORREF {
+    const normalized = clampStat(value) / 100.0;
+    const red = @as(u8, @intFromFloat(255.0 * (1.0 - normalized)));
+    const green = @as(u8, @intFromFloat(255.0 * normalized));
+    return rgb(red, green, 48);
+}
+
+fn drawMoodMeter(hdc: win.HDC, x: i32, y: i32, label: []const u8, value: f32, theme: Theme) void {
+    drawTextColored(hdc, x, y, label, theme.text);
+
+    const meter_rect = Rect{ .x = x + 18, .y = y + 2, .w = 54, .h = 12 };
+    drawFrame(hdc, meter_rect, theme.button, theme.border);
+
+    const inner_w = meter_rect.w - 2;
+    const fill_w = @as(i32, @intFromFloat(@as(f32, @floatFromInt(inner_w)) * (clampStat(value) / 100.0)));
+    if (fill_w <= 0) return;
+
+    fillRectColor(hdc, .{
+        .x = meter_rect.x + 1,
+        .y = meter_rect.y + 1,
+        .w = fill_w,
+        .h = meter_rect.h - 2,
+    }, moodColor(value));
+}
+
+fn drawMoodTriplet(hdc: win.HDC, x: i32, y: i32, moods: MoodLevels, theme: Theme) void {
+    drawMoodMeter(hdc, x, y, "W", moods.warm, theme);
+    drawMoodMeter(hdc, x + 86, y, "E", moods.energy, theme);
+    drawMoodMeter(hdc, x + 172, y, "H", moods.happiness, theme);
 }
 
 fn formatKinkLevelsPrimary(buf: []u8, kinks: KinkLevels) ![]const u8 {
-    return std.fmt.bufPrint(buf, "KinkLevels: top {d}  front {d}  back {d}  wet {d}  covered {d}", .{
+    return std.fmt.bufPrint(buf, "KinkLevels: top {d:.1}  front {d:.1}  back {d:.1}  wet {d:.1}  covered {d:.1}", .{
         kinks.top,
         kinks.front,
         kinks.back,
@@ -1016,7 +1055,7 @@ fn formatKinkLevelsPrimary(buf: []u8, kinks: KinkLevels) ![]const u8 {
 }
 
 fn formatKinkLevelsSecondary(buf: []u8, kinks: KinkLevels) ![]const u8 {
-    return std.fmt.bufPrint(buf, "            deep {d}  rough {d}  submit {d}  control {d}", .{
+    return std.fmt.bufPrint(buf, "            deep {d:.1}  rough {d:.1}  submit {d:.1}  control {d:.1}", .{
         kinks.deep,
         kinks.rough,
         kinks.submit,
@@ -1025,7 +1064,7 @@ fn formatKinkLevelsSecondary(buf: []u8, kinks: KinkLevels) ![]const u8 {
 }
 
 fn formatSkillLevelsPrimary(buf: []u8, skills: SkillLevels) ![]const u8 {
-    return std.fmt.bufPrint(buf, "SkillLevels: top {d}  front {d}  back {d}  wet {d}  covered {d}", .{
+    return std.fmt.bufPrint(buf, "SkillLevels: top {d:.1}  front {d:.1}  back {d:.1}  wet {d:.1}  covered {d:.1}", .{
         skills.top,
         skills.front,
         skills.back,
@@ -1035,7 +1074,7 @@ fn formatSkillLevelsPrimary(buf: []u8, skills: SkillLevels) ![]const u8 {
 }
 
 fn formatSkillLevelsSecondary(buf: []u8, skills: SkillLevels) ![]const u8 {
-    return std.fmt.bufPrint(buf, "             deep {d}  rough {d}  submit {d}  control {d}", .{
+    return std.fmt.bufPrint(buf, "             deep {d:.1}  rough {d:.1}  submit {d:.1}  control {d:.1}", .{
         skills.deep,
         skills.rough,
         skills.submit,
@@ -1123,7 +1162,7 @@ fn countConnectionGroup(group: ConnectionGroup, connections: []const Connection)
     return count;
 }
 
-fn skillLevelForConnection(person: Person, cave_type: CaveType, is_cave_person: bool, stick_has_control: bool) u8 {
+fn skillLevelForConnection(person: Person, cave_type: CaveType, is_cave_person: bool, stick_has_control: bool) f32 {
     if (is_cave_person and stick_has_control) {
         return person.skills.submit;
     }
@@ -1131,7 +1170,7 @@ fn skillLevelForConnection(person: Person, cave_type: CaveType, is_cave_person: 
     return caveSkillLevel(&person.skills, cave_type);
 }
 
-fn kinkLevelForConnection(person: Person, cave_type: CaveType, is_cave_person: bool, stick_has_control: bool) u8 {
+fn kinkLevelForConnection(person: Person, cave_type: CaveType, is_cave_person: bool, stick_has_control: bool) f32 {
     if (is_cave_person and stick_has_control) {
         return person.kinks.submit;
     }
@@ -1159,7 +1198,7 @@ fn drawConnectionGroupTooltip(
     const padding: i32 = 10;
     const tooltip_w: i32 = 700;
     const header_lines: i32 = 3;
-    const lines_per_connection: i32 = 4;
+    const lines_per_connection: i32 = 5;
     const tooltip_h: i32 = padding * 2 + (header_lines + (@as(i32, group_count) * lines_per_connection)) * line_height;
     const tooltip_x = clampI32(mouse_x + 18, 10, client_rect.right - tooltip_w - 10);
     const tooltip_y = clampI32(mouse_y + 18, 10, client_rect.bottom - tooltip_h - 10);
@@ -1183,13 +1222,8 @@ fn drawConnectionGroupTooltip(
     drawTextColored(hdc, tooltip_rect.x + padding, y, summary_line, theme.text);
     y += line_height;
 
-    var mood_buf: [192]u8 = undefined;
-    const mood_line = try std.fmt.bufPrint(&mood_buf, "Cave moods  W/E/H {d}/{d}/{d}", .{
-        cave.moods.warm,
-        cave.moods.energy,
-        cave.moods.happiness,
-    });
-    drawTextColored(hdc, tooltip_rect.x + padding, y, mood_line, theme.text);
+    drawTextColored(hdc, tooltip_rect.x + padding, y, "Cave moods", theme.text);
+    drawMoodTriplet(hdc, tooltip_rect.x + padding + 96, y, cave.moods, theme);
     y += line_height;
 
     var connection_index: u8 = 1;
@@ -1208,20 +1242,16 @@ fn drawConnectionGroupTooltip(
         drawTextColored(hdc, tooltip_rect.x + padding, y, type_line, theme.text);
         y += line_height;
 
-        var connection_mood_buf: [256]u8 = undefined;
-        const connection_mood_line = try std.fmt.bufPrint(&connection_mood_buf, "Moods   stick W/E/H {d}/{d}/{d}  cave W/E/H {d}/{d}/{d}", .{
-            stick.moods.warm,
-            stick.moods.energy,
-            stick.moods.happiness,
-            cave.moods.warm,
-            cave.moods.energy,
-            cave.moods.happiness,
-        });
-        drawTextColored(hdc, tooltip_rect.x + padding, y, connection_mood_line, theme.text);
+        drawTextColored(hdc, tooltip_rect.x + padding, y, "Stick moods", theme.text);
+        drawMoodTriplet(hdc, tooltip_rect.x + padding + 96, y, stick.moods, theme);
+        y += line_height;
+
+        drawTextColored(hdc, tooltip_rect.x + padding, y, "Cave moods", theme.text);
+        drawMoodTriplet(hdc, tooltip_rect.x + padding + 96, y, cave.moods, theme);
         y += line_height;
 
         var skill_buf: [320]u8 = undefined;
-        const skill_line = try std.fmt.bufPrint(&skill_buf, "Skills  stick {s} {d}  cave {s} {d}", .{
+        const skill_line = try std.fmt.bufPrint(&skill_buf, "Skills  stick {s} {d:.1}  cave {s} {d:.1}", .{
             if (connection.stick_has_control) "control" else caveTypeLabel(connection.cave_type),
             skillLevelForConnection(stick, connection.cave_type, false, connection.stick_has_control),
             if (connection.stick_has_control) "submit" else caveTypeLabel(connection.cave_type),
@@ -1231,7 +1261,7 @@ fn drawConnectionGroupTooltip(
         y += line_height;
 
         var kink_buf: [320]u8 = undefined;
-        const kink_line = try std.fmt.bufPrint(&kink_buf, "Kinks   stick {s} {d}  cave {s} {d}", .{
+        const kink_line = try std.fmt.bufPrint(&kink_buf, "Kinks   stick {s} {d:.1}  cave {s} {d:.1}", .{
             if (connection.stick_has_control) "control" else caveTypeLabel(connection.cave_type),
             kinkLevelForConnection(stick, connection.cave_type, false, connection.stick_has_control),
             if (connection.stick_has_control) "submit" else caveTypeLabel(connection.cave_type),
@@ -1275,9 +1305,8 @@ fn drawPersonTooltip(
     drawTextColored(hdc, tooltip_rect.x + 10, y, identity_line, theme.text);
     y += line_height;
 
-    var moods_buf: [128]u8 = undefined;
-    const moods_line = try formatMoodLevels(&moods_buf, person.moods);
-    drawTextColored(hdc, tooltip_rect.x + 10, y, moods_line, theme.text);
+    drawTextColored(hdc, tooltip_rect.x + 10, y, "Moods", theme.text);
+    drawMoodTriplet(hdc, tooltip_rect.x + 82, y, person.moods, theme);
     y += line_height;
 
     var kinks_primary_buf: [160]u8 = undefined;
@@ -1332,6 +1361,9 @@ fn drawPersonTooltip(
 
 fn wndProc(hwnd: ?win.HWND, msg: win.UINT, w_param: win.WPARAM, l_param: win.LPARAM) callconv(.winapi) win.LRESULT {
     switch (msg) {
+        win.WM_ERASEBKGND => {
+            return 1;
+        },
         win.WM_DESTROY => {
             win.PostQuitMessage(0);
             return 0;
@@ -1447,31 +1479,40 @@ pub fn main() !void {
             }
         }
 
-        if (!ui.paused and std.time.milliTimestamp() - last_step_ms >= 1000) {
+        while (!ui.paused and std.time.milliTimestamp() - last_step_ms >= step_interval_ms) {
             try stepSimulation(&world, &tick, random, allocator);
-            last_step_ms += 1000;
+            last_step_ms += step_interval_ms;
         }
 
         const hdc = win.GetDC(hwnd) orelse return error.GetDeviceContextFailed;
         defer _ = win.ReleaseDC(hwnd, hdc);
 
+        const backbuffer_dc = win.CreateCompatibleDC(hdc) orelse return error.GetDeviceContextFailed;
+        defer _ = win.DeleteDC(backbuffer_dc);
+
+        const backbuffer_bitmap = win.CreateCompatibleBitmap(hdc, client_rect.right, client_rect.bottom) orelse return error.CreateBrushFailed;
+        defer _ = win.DeleteObject(@ptrCast(backbuffer_bitmap));
+
+        const previous_bitmap = win.SelectObject(backbuffer_dc, @ptrCast(backbuffer_bitmap)) orelse return error.CreateBrushFailed;
+        defer _ = win.SelectObject(backbuffer_dc, previous_bitmap);
+
         const bg = win.CreateSolidBrush(theme.background) orelse return error.CreateBrushFailed;
         defer _ = win.DeleteObject(@ptrCast(bg));
-        _ = win.FillRect(hdc, &client_rect, bg);
+        _ = win.FillRect(backbuffer_dc, &client_rect, bg);
 
-        drawButton(hdc, pause_rect, if (ui.paused) "Play" else "Pause", pause_hovered, theme);
-        drawButton(hdc, reset_rect, "Reset", reset_hovered, theme);
-        drawButton(hdc, dark_mode_rect, if (ui.dark_mode) "Light Mode" else "Dark Mode", dark_mode_hovered, theme);
+        drawButton(backbuffer_dc, pause_rect, if (ui.paused) "Play" else "Pause", pause_hovered, theme);
+        drawButton(backbuffer_dc, reset_rect, "Reset", reset_hovered, theme);
+        drawButton(backbuffer_dc, dark_mode_rect, if (ui.dark_mode) "Light Mode" else "Dark Mode", dark_mode_hovered, theme);
 
         var status_buf: [128]u8 = undefined;
         const status = try std.fmt.bufPrint(&status_buf, "Tick: {d}  Total: {d}", .{ tick, world.totalPeople() });
-        drawTextColored(hdc, 260, 30, status, theme.text);
+        drawTextColored(backbuffer_dc, 260, 30, status, theme.text);
 
         if (ui.selected_place) |selected_place| {
-            drawButton(hdc, back_rect, "Back", back_hovered, theme);
-            drawTextColored(hdc, 130, 80, selected_place.asString(), theme.text);
+            drawButton(backbuffer_dc, back_rect, "Back", back_hovered, theme);
+            drawTextColored(backbuffer_dc, 130, 80, selected_place.asString(), theme.text);
 
-            drawTextColored(hdc, 20, 130, "People in place:", theme.text);
+            drawTextColored(backbuffer_dc, 20, 130, "People in place:", theme.text);
             var y_people: i32 = 155;
             var hovered_person: ?Person = null;
             for (world.people.items) |person| {
@@ -1482,11 +1523,11 @@ pub fn main() !void {
                 }
                 var person_buf: [220]u8 = undefined;
                 const person_line = try std.fmt.bufPrint(&person_buf, "#{d} {s} {s}, age {d} ({s})", .{ person.id, person.first_name, person.last_name, person.age, person.kind.asString() });
-                drawTextColored(hdc, 30, y_people, person_line, theme.text);
+                drawTextColored(backbuffer_dc, 30, y_people, person_line, theme.text);
                 y_people += 18;
             }
 
-            drawTextColored(hdc, 620, 130, "Current connections:", theme.text);
+            drawTextColored(backbuffer_dc, 620, 130, "Current connections:", theme.text);
             var y_conn: i32 = 155;
             var hovered_connection_group: ?ConnectionGroup = null;
             for (world.connections.items, 0..) |connection, connection_index| {
@@ -1507,29 +1548,27 @@ pub fn main() !void {
                 }
 
                 if (is_hovered) {
-                    fillRectColor(hdc, connection_rect, theme.button_hover);
+                    fillRectColor(backbuffer_dc, connection_rect, theme.button_hover);
                 }
 
-                var conn_buf: [320]u8 = undefined;
-                const conn_line = try std.fmt.bufPrint(&conn_buf, "{s} {s} ({s}) | connections {d} | W/E/H {d}/{d}/{d}", .{
+                var conn_buf: [256]u8 = undefined;
+                const conn_line = try std.fmt.bufPrint(&conn_buf, "{s} {s} ({s}) | connections {d}", .{
                     cave.first_name,
                     cave.last_name,
                     cave.kind.asString(),
                     countConnectionGroup(group, world.connections.items),
-                    cave.moods.warm,
-                    cave.moods.energy,
-                    cave.moods.happiness,
                 });
-                drawTextColored(hdc, 630, y_conn, conn_line, theme.text);
+                drawTextColored(backbuffer_dc, 630, y_conn, conn_line, theme.text);
+                drawMoodTriplet(backbuffer_dc, 910, y_conn, cave.moods, theme);
                 y_conn += 18;
             }
 
             if (hovered_person) |person| {
-                try drawPersonTooltip(hdc, client_rect, mouse_x, mouse_y, person, world.people.items, world.connections.items, theme);
+                try drawPersonTooltip(backbuffer_dc, client_rect, mouse_x, mouse_y, person, world.people.items, world.connections.items, theme);
             }
 
             if (hovered_connection_group) |group| {
-                try drawConnectionGroupTooltip(hdc, client_rect, mouse_x, mouse_y, group, world.people.items, world.connections.items, theme);
+                try drawConnectionGroupTooltip(backbuffer_dc, client_rect, mouse_x, mouse_y, group, world.people.items, world.connections.items, theme);
             }
         } else {
             var hovered_place: ?Place = null;
@@ -1540,11 +1579,11 @@ pub fn main() !void {
                 const rect = Rect{ .x = 20 + col * 360, .y = 120 + row * 110, .w = 330, .h = 90 };
                 const is_hovered = rect.contains(mouse_x, mouse_y);
                 if (is_hovered) hovered_place = place;
-                drawButton(hdc, rect, place.asString(), is_hovered, theme);
+                drawButton(backbuffer_dc, rect, place.asString(), is_hovered, theme);
 
                 var pop_buf: [96]u8 = undefined;
                 const pop_text = try std.fmt.bufPrint(&pop_buf, "Population: {d}/{d}", .{ world.place_population[@intFromEnum(place)], World.place_capacity });
-                drawTextColored(hdc, rect.x + 10, rect.y + 45, pop_text, theme.text);
+                drawTextColored(backbuffer_dc, rect.x + 10, rect.y + 45, pop_text, theme.text);
 
                 if (click_pos) |click| {
                     if (rect.contains(click.x, click.y)) {
@@ -1556,15 +1595,17 @@ pub fn main() !void {
 
             if (hovered_place) |place| {
                 const panel = Rect{ .x = 760, .y = 120, .w = 400, .h = 130 };
-                drawFrame(hdc, panel, theme.panel, theme.border);
-                drawTextColored(hdc, panel.x + 10, panel.y + 10, place.asString(), theme.text);
+                drawFrame(backbuffer_dc, panel, theme.panel, theme.border);
+                drawTextColored(backbuffer_dc, panel.x + 10, panel.y + 10, place.asString(), theme.text);
 
                 var info_buf: [120]u8 = undefined;
                 const info = try std.fmt.bufPrint(&info_buf, "Population: {d}   Capacity: {d}", .{ world.place_population[@intFromEnum(place)], World.place_capacity });
-                drawTextColored(hdc, panel.x + 10, panel.y + 40, info, theme.text);
-                drawTextColored(hdc, panel.x + 10, panel.y + 70, "Click a place to inspect details", theme.text);
+                drawTextColored(backbuffer_dc, panel.x + 10, panel.y + 40, info, theme.text);
+                drawTextColored(backbuffer_dc, panel.x + 10, panel.y + 70, "Click a place to inspect details", theme.text);
             }
         }
+
+        _ = win.BitBlt(hdc, 0, 0, client_rect.right, client_rect.bottom, backbuffer_dc, 0, 0, win.SRCCOPY);
 
         std.Thread.sleep(16 * std.time.ns_per_ms);
     }
