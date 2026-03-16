@@ -61,6 +61,8 @@ pub const MoodLevels = struct {
     warm: f32,
     energy: f32,
     happiness: f32,
+    wet: f32,
+    covered: f32,
 };
 
 pub const KinkLevels = struct {
@@ -377,6 +379,11 @@ pub fn increaseConnectionHappiness(world_state: *World, primary_index: usize, ot
     world_state.people.items[other_index].moods.happiness = clampStat(world_state.people.items[other_index].moods.happiness + (10.0 * rate_scale));
 }
 
+pub inline fn energyLossMultiplier(moods: *const MoodLevels) f32 {
+    const protection = (moods.wet + moods.covered) * 0.0025;
+    return @max(0.0, 1.0 - protection);
+}
+
 pub fn personEndsConnectionsFromEnergy(person_id: usize, connections: []const Connection) bool {
     for (connections) |connection| {
         if (connection.stick_person_id == person_id) return true;
@@ -454,6 +461,8 @@ fn randomMoodLevels(random: std.Random) MoodLevels {
         .warm = randomLevel(random),
         .energy = randomLevel(random),
         .happiness = randomLevel(random),
+        .wet = 0.0,
+        .covered = 0.0,
     };
 }
 

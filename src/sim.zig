@@ -7,7 +7,21 @@ pub const step_interval_ms = 1000 / ticks_per_second;
 const old_connection_update_interval_seconds: f32 = 10.0;
 const new_connection_update_interval_seconds: f32 = 1.0 / @as(f32, ticks_per_second);
 const connection_rate_scale: f32 = new_connection_update_interval_seconds / old_connection_update_interval_seconds;
+const mood_decay_per_tick: f32 = 1.0 / 30.0;
 const cave_types = [_]world.CaveType{ .top, .front, .back };
+
+const SimEvent = union(enum) {
+    cave_covered: struct {
+        stick_person_id: usize,
+        cave_person_id: usize,
+        cave_type: world.CaveType,
+    },
+    cave_wet: struct {
+        stick_person_id: usize,
+        cave_person_id: usize,
+        cave_type: world.CaveType,
+    },
+};
 
 const ConnectionProposal = struct {
     stick_person_id: usize,
@@ -21,6 +35,7 @@ pub fn stepSimulation(world_state: *world.World, tick: *u64, random: std.Random,
         try world.spawnRandomPerson(world_state, random, allocator);
     }
 
+    decaySpecialMoods(world_state);
     try updateConnectionActivity(world_state, random, allocator);
 }
 
@@ -125,15 +140,73 @@ fn clearAllConnectionsForPerson(world_state: *world.World, person_id: usize) voi
     }
 }
 
+fn decaySpecialMoods(world_state: *world.World) void {
+    for (world_state.people.items) |*person| {
+        person.moods.wet = world.clampStat(person.moods.wet - mood_decay_per_tick);
+        person.moods.covered = world.clampStat(person.moods.covered - mood_decay_per_tick);
+    }
+}
+
+fn emitEvent(world_state: *world.World, event: SimEvent) void {
+    switch (event) {
+        .cave_covered => |payload| {
+            const cave_index = world.findPersonIndexById(world_state.people.items, payload.cave_person_id) orelse return;
+            world_state.people.items[cave_index].moods.covered = world.clampStat(world_state.people.items[cave_index].moods.covered + 20.0);
+        },
+        .cave_wet => |payload| {
+            const cave_index = world.findPersonIndexById(world_state.people.items, payload.cave_person_id) orelse return;
+            world_state.people.items[cave_index].moods.wet = world.clampStat(world_state.people.items[cave_index].moods.wet + 30.0);
+        },
+    }
+}
+
+fn applyConnectionEnergyLoss(world_state: *world.World, person_index: usize, base_loss: f32) void {
+    const multiplier = world.energyLossMultiplier(&world_state.people.items[person_index].moods);
+    world_state.people.items[person_index].moods.energy = world.clampStat(
+        world_state.people.items[person_index].moods.energy - (base_loss * multiplier),
+    );
+}
+
+fn increaseStickConnectionHappiness(
+    world_state: *world.World,
+    stick_index: usize,
+    cave_index: usize,
+    connection: world.Connection,
+    rate_scale: f32,
+) void {
+    const boosted = world.clampStat(world_state.people.items[stick_index].moods.happiness + (10.0 * rate_scale));
+    world_state.people.items[stick_index].moods.happiness = boosted;
+
+    if (boosted < 100.0) return;
+
+    emitEvent(world_state, .{ .cave_covered = .{
+        .stick_person_id = connection.stick_person_id,
+        .cave_person_id = connection.cave_person_id,
+        .cave_type = connection.cave_type,
+    } });
+
+    world_state.people.items[stick_index].moods.happiness = 10.0 * rate_scale;
+    world_state.people.items[cave_index].moods.happiness = world.clampStat(world_state.people.items[cave_index].moods.happiness + (10.0 * rate_scale));
+}
+
+fn emitWetEventForStick(world_state: *world.World, person_id: usize) void {
+    const connection = world.findStickConnection(world_state.connections.items, person_id) orelse return;
+    emitEvent(world_state, .{ .cave_wet = .{
+        .stick_person_id = connection.stick_person_id,
+        .cave_person_id = connection.cave_person_id,
+        .cave_type = connection.cave_type,
+    } });
+}
+
 fn updateConnectionActivity(world_state: *world.World, random: std.Random, allocator: std.mem.Allocator) !void {
     for (world_state.connections.items) |connection| {
         const stick_index = world.findPersonIndexById(world_state.people.items, connection.stick_person_id) orelse continue;
         const cave_index = world.findPersonIndexById(world_state.people.items, connection.cave_person_id) orelse continue;
 
-        world_state.people.items[stick_index].moods.energy = world.clampStat(world_state.people.items[stick_index].moods.energy - (3.0 * connection_rate_scale));
-        world_state.people.items[cave_index].moods.energy = world.clampStat(world_state.people.items[cave_index].moods.energy - (3.0 * connection_rate_scale));
+        applyConnectionEnergyLoss(world_state, stick_index, 3.0 * connection_rate_scale);
+        applyConnectionEnergyLoss(world_state, cave_index, 3.0 * connection_rate_scale);
 
-        world.increaseConnectionHappiness(world_state, stick_index, cave_index, connection_rate_scale);
+        increaseStickConnectionHappiness(world_state, stick_index, cave_index, connection, connection_rate_scale);
         world.increaseConnectionHappiness(world_state, cave_index, stick_index, connection_rate_scale);
     }
 
@@ -147,6 +220,9 @@ fn updateConnectionActivity(world_state: *world.World, random: std.Random, alloc
         }
 
         if (world.personEndsConnectionsFromEnergy(person.id, world_state.connections.items) and world_state.people.items[i].moods.energy <= 0.0) {
+            if (world.personHasStickConnection(person.id, world_state.connections.items)) {
+                emitWetEventForStick(world_state, person.id);
+            }
             clearAllConnectionsForPerson(world_state, person.id);
             continue;
         }

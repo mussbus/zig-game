@@ -256,7 +256,7 @@ fn drawPlaceView(
         if (cave.kind == .male) continue;
 
         const group = ConnectionGroup{ .cave_person_id = connection.cave_person_id };
-        const connection_rect = Rect{ .x = 624, .y = y_conn - 2, .w = 520, .h = 18 };
+        const connection_rect = Rect{ .x = 624, .y = y_conn - 2, .w = 520, .h = 34 };
         const is_hovered = connection_rect.contains(mouse_x, mouse_y);
         if (is_hovered) {
             hovered_connection_group = group;
@@ -272,7 +272,8 @@ fn drawPlaceView(
         });
         drawTextColored(hdc, 630, y_conn, conn_line, theme.text);
         drawMoodTriplet(hdc, 910, y_conn, cave.moods, theme);
-        y_conn += 18;
+        drawCaveSpecialMoodBars(hdc, 910, y_conn + 16, cave.moods, theme);
+        y_conn += 36;
     }
 
     if (hovered_person) |person| {
@@ -361,7 +362,7 @@ fn moodColor(value: f32) win.COLORREF {
     return rgb(red, green, 48);
 }
 
-fn drawMoodMeter(hdc: win.HDC, x: i32, y: i32, label: []const u8, value: f32, theme: Theme) void {
+fn drawMoodMeterColored(hdc: win.HDC, x: i32, y: i32, label: []const u8, value: f32, fill_color: win.COLORREF, theme: Theme) void {
     drawTextColored(hdc, x, y, label, theme.text);
 
     const meter_rect = Rect{ .x = x + 18, .y = y + 2, .w = 54, .h = 12 };
@@ -376,13 +377,29 @@ fn drawMoodMeter(hdc: win.HDC, x: i32, y: i32, label: []const u8, value: f32, th
         .y = meter_rect.y + 1,
         .w = fill_w,
         .h = meter_rect.h - 2,
-    }, moodColor(value));
+    }, fill_color);
+}
+
+fn drawMoodMeter(hdc: win.HDC, x: i32, y: i32, label: []const u8, value: f32, theme: Theme) void {
+    drawMoodMeterColored(hdc, x, y, label, value, moodColor(value), theme);
 }
 
 fn drawMoodTriplet(hdc: win.HDC, x: i32, y: i32, moods: world.MoodLevels, theme: Theme) void {
     drawMoodMeter(hdc, x, y, "W", moods.warm, theme);
     drawMoodMeter(hdc, x + 86, y, "E", moods.energy, theme);
     drawMoodMeter(hdc, x + 172, y, "H", moods.happiness, theme);
+}
+
+fn drawCaveSpecialMoodBars(hdc: win.HDC, x: i32, y: i32, moods: world.MoodLevels, theme: Theme) void {
+    drawMoodMeterColored(hdc, x, y, "W", moods.wet, rgb(255, 244, 170), theme);
+    drawMoodMeterColored(hdc, x + 86, y, "C", moods.covered, rgb(255, 255, 255), theme);
+}
+
+fn formatSpecialMoods(buf: []u8, moods: world.MoodLevels) ![]const u8 {
+    return std.fmt.bufPrint(buf, "Special moods: wet {d:.1}  covered {d:.1}", .{
+        moods.wet,
+        moods.covered,
+    });
 }
 
 fn formatKinkLevelsPrimary(buf: []u8, kinks: world.KinkLevels) ![]const u8 {
@@ -499,7 +516,7 @@ fn drawConnectionGroupTooltip(
     const line_height: i32 = 18;
     const padding: i32 = 10;
     const tooltip_w: i32 = 700;
-    const header_lines: i32 = 3;
+    const header_lines: i32 = 4;
     const lines_per_connection: i32 = 5;
     const tooltip_h: i32 = padding * 2 + (header_lines + (@as(i32, group_count) * lines_per_connection)) * line_height;
     const tooltip_x = clampI32(mouse_x + 18, 10, client_rect.right - tooltip_w - 10);
@@ -522,6 +539,10 @@ fn drawConnectionGroupTooltip(
 
     drawTextColored(hdc, tooltip_rect.x + padding, y, "Cave moods", theme.text);
     drawMoodTriplet(hdc, tooltip_rect.x + padding + 96, y, cave.moods, theme);
+    y += line_height;
+
+    drawTextColored(hdc, tooltip_rect.x + padding, y, "Cave fluids", theme.text);
+    drawCaveSpecialMoodBars(hdc, tooltip_rect.x + padding + 96, y, cave.moods, theme);
     y += line_height;
 
     var connection_index: u8 = 1;
@@ -579,7 +600,7 @@ fn drawPersonTooltip(
     theme: Theme,
 ) !void {
     const tooltip_w: i32 = 540;
-    const tooltip_h: i32 = 228;
+    const tooltip_h: i32 = 246;
     const line_height: i32 = 18;
     const tooltip_x = clampI32(mouse_x + 18, 10, client_rect.right - tooltip_w - 10);
     const tooltip_y = clampI32(mouse_y + 18, 10, client_rect.bottom - tooltip_h - 10);
@@ -601,6 +622,11 @@ fn drawPersonTooltip(
 
     drawTextColored(hdc, tooltip_rect.x + 10, y, "Moods", theme.text);
     drawMoodTriplet(hdc, tooltip_rect.x + 82, y, person.moods, theme);
+    y += line_height;
+
+    var special_moods_buf: [128]u8 = undefined;
+    const special_moods_line = try formatSpecialMoods(&special_moods_buf, person.moods);
+    drawTextColored(hdc, tooltip_rect.x + 10, y, special_moods_line, theme.text);
     y += line_height;
 
     var kinks_primary_buf: [160]u8 = undefined;
