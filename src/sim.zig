@@ -127,12 +127,12 @@ fn clearAllConnectionsForPerson(world_state: *world.World, person_id: usize) voi
         const cave = world.findPersonById(world_state.people.items, connection.cave_person_id);
         if (stick) |stick_person| {
             if (world.findPersonIndexById(world_state.people.items, stick_person.id)) |index| {
-                world_state.people.items[index].moods.warm = 0;
+                world_state.people.items[index].moods.aroused = 0;
             }
         }
         if (cave) |cave_person| {
             if (world.findPersonIndexById(world_state.people.items, cave_person.id)) |index| {
-                world_state.people.items[index].moods.warm = 0;
+                world_state.people.items[index].moods.aroused = 0;
             }
         }
 
@@ -215,7 +215,7 @@ fn updateConnectionActivity(world_state: *world.World, random: std.Random, alloc
         if (connection_count == 0) {
             world_state.people.items[i].moods.energy = world.clampStat(person.moods.energy + (2.0 * connection_rate_scale));
             const increase = world.connectablePeopleCount(person, world_state.people.items, world_state.connections.items);
-            world_state.people.items[i].moods.warm = world.clampStat(person.moods.warm + (@as(f32, @floatFromInt(increase)) * (3.0 * connection_rate_scale)));
+            world_state.people.items[i].moods.aroused = world.clampStat(person.moods.aroused + (@as(f32, @floatFromInt(increase)) * (3.0 * connection_rate_scale)));
             continue;
         }
 
@@ -277,7 +277,7 @@ fn updateConnectionActivity(world_state: *world.World, random: std.Random, alloc
             const should_connect = if (world.ownerOwnedPair(person, other))
                 true
             else blk: {
-                const odds = (@as(f64, person.moods.warm) / 100.0) * (@as(f64, other.moods.warm) / 100.0);
+                const odds = (@as(f64, person.moods.aroused) / 100.0) * (@as(f64, other.moods.aroused) / 100.0);
                 break :blk random.float(f64) < chancePerCheck(odds);
             };
             if (!should_connect) continue;

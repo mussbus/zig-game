@@ -58,7 +58,7 @@ pub const PersonType = enum(u8) {
 };
 
 pub const MoodLevels = struct {
-    warm: f32,
+    aroused: f32,
     energy: f32,
     happiness: f32,
     wet: f32,
@@ -458,7 +458,7 @@ inline fn randomLevel(random: std.Random) f32 {
 
 fn randomMoodLevels(random: std.Random) MoodLevels {
     return .{
-        .warm = randomLevel(random),
+        .aroused = randomLevel(random),
         .energy = randomLevel(random),
         .happiness = randomLevel(random),
         .wet = 0.0,

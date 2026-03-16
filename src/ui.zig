@@ -385,7 +385,7 @@ fn drawMoodMeter(hdc: win.HDC, x: i32, y: i32, label: []const u8, value: f32, th
 }
 
 fn drawMoodTriplet(hdc: win.HDC, x: i32, y: i32, moods: world.MoodLevels, theme: Theme) void {
-    drawMoodMeter(hdc, x, y, "W", moods.warm, theme);
+    drawMoodMeter(hdc, x, y, "A", moods.aroused, theme);
     drawMoodMeter(hdc, x + 86, y, "E", moods.energy, theme);
     drawMoodMeter(hdc, x + 172, y, "H", moods.happiness, theme);
 }
@@ -533,7 +533,7 @@ fn drawConnectionGroupTooltip(
     y += line_height;
 
     var summary_buf: [160]u8 = undefined;
-    const summary_line = try std.fmt.bufPrint(&summary_buf, "Incoming stick-cave connections: {d}", .{group_count});
+    const summary_line = try std.fmt.bufPrint(&summary_buf, "Stick-Cave connections: {d}", .{group_count});
     drawTextColored(hdc, tooltip_rect.x + padding, y, summary_line, theme.text);
     y += line_height;
 
