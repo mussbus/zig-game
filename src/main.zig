@@ -1,5 +1,20 @@
 const std = @import("std");
 
+const male_first_names = [_][]const u8{
+    "James", "John", "Robert", "Michael", "David",
+    "William", "Richard", "Joseph", "Thomas", "Charles",
+};
+
+const female_first_names = [_][]const u8{
+    "Mary", "Patricia", "Jennifer", "Linda", "Elizabeth",
+    "Barbara", "Susan", "Jessica", "Sarah", "Karen",
+};
+
+const last_names = [_][]const u8{
+    "Smith", "Johnson", "Williams", "Brown", "Jones", "Garcia", "Miller", "Davis", "Rodriguez", "Martinez",
+    "Hernandez", "Lopez", "Gonzalez", "Wilson", "Anderson", "Thomas", "Taylor", "Moore", "Jackson", "Martin",
+};
+
 const Place = enum(u8) {
     town_square,
     market,
@@ -86,6 +101,8 @@ const ConnectionType = enum {
 
 const Person = struct {
     id: usize,
+    first_name: []const u8,
+    last_name: []const u8,
     kind: PersonType,
     place: Place,
     moods: MoodLevels,
@@ -140,6 +157,19 @@ fn randomPersonType(random: std.Random) PersonType {
         1 => .female,
         else => .futa,
     };
+}
+
+fn randomFirstName(kind: PersonType, random: std.Random) []const u8 {
+    const names = switch (kind) {
+        .male => male_first_names[0..],
+        .female, .futa => female_first_names[0..],
+    };
+
+    return names[random.uintLessThan(usize, names.len)];
+}
+
+fn randomLastName(random: std.Random) []const u8 {
+    return last_names[random.uintLessThan(usize, last_names.len)];
 }
 
 fn randomPlace(random: std.Random) Place {
@@ -317,20 +347,22 @@ fn clearConnection(people: []Person, person_index: usize) void {
         people[person_index].connection_type = null;
         return;
     };
-    const person_id = people[person_index].id;
+    const person_first_name = people[person_index].first_name;
+    const person_last_name = people[person_index].last_name;
     people[person_index].moods.warm = 0;
     people[person_index].connecting_to_id = null;
     people[person_index].connection_type = null;
 
-    std.debug.print("Tick: person #{d} finished connecting with person #{d}; warm reset to 0\n", .{ person_id, partner_id });
-
     for (people, 0..) |*other, other_index| {
         if (other_index != person_index and other.id == partner_id) {
+            const other_first_name = other.first_name;
+            const other_last_name = other.last_name;
             other.moods.warm = 0;
             other.connecting_to_id = null;
             other.connection_type = null;
 
-            std.debug.print("Tick: person #{d} finished connecting with person #{d}; warm reset to 0\n", .{ partner_id, person_id });
+            std.debug.print("Tick: {s} {s} finished connecting with {s} {s}; warm reset to 0\n", .{ person_first_name, person_last_name, other_first_name, other_last_name });
+            std.debug.print("Tick: {s} {s} finished connecting with {s} {s}; warm reset to 0\n", .{ other_first_name, other_last_name, person_first_name, person_last_name });
             break;
         }
     }
@@ -375,7 +407,7 @@ fn updateConnectionActivity(world: *World, random: std.Random) void {
                 continue;
             }
 
-            std.debug.print("Tick: person #{d} is connecting with person #{d}\n", .{ person.id, other.id });
+            std.debug.print("Tick: {s} {s} is connecting with {s} {s}\n", .{ person.first_name, person.last_name, other.first_name, other.last_name });
 
             const should_connect = if (ownerOwnedPair(person, other))
                 true
@@ -394,7 +426,7 @@ fn updateConnectionActivity(world: *World, random: std.Random) void {
             world.people.items[j].connecting_to_id = person.id;
             world.people.items[i].connection_type = connection_type;
             world.people.items[j].connection_type = connection_type;
-            std.debug.print("Tick: person #{d} connected with person #{d} ({s})\n", .{ person.id, other.id, @tagName(connection_type) });
+            std.debug.print("Tick: {s} {s} connected with {s} {s} ({s})\n", .{ person.first_name, person.last_name, other.first_name, other.last_name, @tagName(connection_type) });
             break;
         }
     }
@@ -466,6 +498,8 @@ pub fn main() !void {
         const place = randomPlace(random);
         const new_person = Person{
             .id = world.totalPeople() + 1,
+            .first_name = randomFirstName(kind, random),
+            .last_name = randomLastName(random),
             .kind = kind,
             .place = place,
             .moods = randomMoodLevels(random),
@@ -479,9 +513,10 @@ pub fn main() !void {
         try world.addPerson(new_person, allocator);
 
         std.debug.print(
-            "Tick: created person #{d} ({s}) at {s} [moods: warm={d}, energy={d}, happiness={d}; skills: top={d}, front={d}, back={d}, wet={d}, covered={d}, deep={d}, rough={d}, submit={d}, control={d}; kinks: top={d}, front={d}, back={d}, wet={d}, covered={d}, deep={d}, rough={d}, submit={d}, control={d}; owned_by_id={any}]\nTotal={d} [male={d}, female={d}, futa={d}]\n\n",
+            "Tick: created {s} {s} ({s}) at {s} [moods: warm={d}, energy={d}, happiness={d}; skills: top={d}, front={d}, back={d}, wet={d}, covered={d}, deep={d}, rough={d}, submit={d}, control={d}; kinks: top={d}, front={d}, back={d}, wet={d}, covered={d}, deep={d}, rough={d}, submit={d}, control={d}; owned_by_id={any}]\nTotal={d} [male={d}, female={d}, futa={d}]\n\n",
             .{
-                new_person.id,
+                new_person.first_name,
+                new_person.last_name,
                 new_person.kind.asString(),
                 new_person.place.asString(),
                 new_person.moods.warm,
