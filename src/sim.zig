@@ -223,6 +223,11 @@ fn connectionGroupCenterInBounds(center: world.Vec2) bool {
         center.y >= margin and center.y <= world.place_size - margin;
 }
 
+fn snapCoordinateToSearchGrid(value: f32, margin: f32) f32 {
+    const steps = @round((value - margin) / world.min_person_separation);
+    return margin + (steps * world.min_person_separation);
+}
+
 fn fullConnectionGroupFitsAt(
     world_state: *const world.World,
     place: world.Place,
@@ -274,25 +279,32 @@ fn findSafeConnectionGroupCenter(
     }
 
     const margin = world.person_radius + world.settled_connection_distance;
-    var best_location: ?world.Vec2 = null;
-    var best_distance_sq = std.math.inf(f32);
+    const grid_origin = world.Vec2{
+        .x = snapCoordinateToSearchGrid(cave_person.location.x, margin),
+        .y = snapCoordinateToSearchGrid(cave_person.location.y, margin),
+    };
+    const max_grid_radius = @as(i32, @intFromFloat(@ceil((world.place_size - (margin * 2.0)) / world.min_person_separation)));
 
-    var y = margin;
-    while (y <= world.place_size - margin) : (y += world.min_person_separation) {
-        var x = margin;
-        while (x <= world.place_size - margin) : (x += world.min_person_separation) {
-            const candidate = world.Vec2{ .x = x, .y = y };
-            if (!fullConnectionGroupFitsAt(world_state, cave_person.place, candidate, cave_person.id, stick_person_id)) continue;
+    var radius: i32 = 0;
+    while (radius <= max_grid_radius) : (radius += 1) {
+        var dy = -radius;
+        while (dy <= radius) : (dy += 1) {
+            var dx = -radius;
+            while (dx <= radius) : (dx += 1) {
+                if (@max(@abs(dx), @abs(dy)) != radius) continue;
 
-            const distance_sq = world.distanceSquared(candidate, cave_person.location);
-            if (distance_sq < best_distance_sq) {
-                best_distance_sq = distance_sq;
-                best_location = candidate;
+                const candidate = world.Vec2{
+                    .x = grid_origin.x + (@as(f32, @floatFromInt(dx)) * world.min_person_separation),
+                    .y = grid_origin.y + (@as(f32, @floatFromInt(dy)) * world.min_person_separation),
+                };
+                if (fullConnectionGroupFitsAt(world_state, cave_person.place, candidate, cave_person.id, stick_person_id)) {
+                    return candidate;
+                }
             }
         }
     }
 
-    return best_location;
+    return null;
 }
 
 fn displacePerson(world_state: *world.World, person_index: usize, delta: world.Vec2) void {

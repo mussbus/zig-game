@@ -327,7 +327,15 @@ pub fn prefillPlaces(world_state: *World, random: std.Random, allocator: std.mem
 }
 
 pub fn spawnRandomPerson(world_state: *World, random: std.Random, allocator: std.mem.Allocator) !void {
+    if (allPlacesFull(world_state.*)) return;
     try spawnPersonInPlace(world_state, randomPlace(random), random, allocator);
+}
+
+pub fn allPlacesFull(world_state: World) bool {
+    for (world_state.place_population) |population| {
+        if (population < World.place_capacity) return false;
+    }
+    return true;
 }
 
 pub inline fn clampStat(value: f32) f32 {

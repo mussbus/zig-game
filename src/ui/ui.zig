@@ -10,6 +10,8 @@ const win = @import("../win32.zig").win;
 const ClickPos = ui_types.ClickPos;
 const Rect = ui_types.Rect;
 const UiState = ui_types.UiState;
+const max_sim_steps_per_frame: u8 = 4;
+const max_sim_lag_ms: i64 = @as(i64, sim.step_interval_ms) * max_sim_steps_per_frame;
 
 pub fn run(allocator: std.mem.Allocator) !void {
     var world_state = world.World.init();
@@ -159,9 +161,17 @@ pub fn run(allocator: std.mem.Allocator) !void {
             ui_layout.clampPlaceViewScroll(&ui, &world_state, selected_place, client_rect);
         }
 
-        while (!ui.paused and std.time.milliTimestamp() - last_step_ms >= sim.step_interval_ms) {
+        const now_ms = std.time.milliTimestamp();
+        if (!ui.paused and now_ms - last_step_ms > max_sim_lag_ms) {
+            // Drop excess backlog so a slow frame cannot monopolize the UI thread.
+            last_step_ms = now_ms - max_sim_lag_ms;
+        }
+
+        var steps_this_frame: u8 = 0;
+        while (!ui.paused and steps_this_frame < max_sim_steps_per_frame and std.time.milliTimestamp() - last_step_ms >= sim.step_interval_ms) {
             try sim.stepSimulation(&world_state, &tick, random, allocator);
             last_step_ms += sim.step_interval_ms;
+            steps_this_frame += 1;
         }
 
         try ui_render.renderFrame(hwnd, client_rect, &ui, &world_state, tick, mouse_x, mouse_y);
