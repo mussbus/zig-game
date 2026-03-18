@@ -65,6 +65,18 @@ pub const MoodLevels = struct {
     covered: f32,
 };
 
+pub const Vec2 = struct {
+    x: f32,
+    y: f32,
+};
+
+pub const PlaceRect = struct {
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+};
+
 pub const KinkLevels = struct {
     top: f32,
     front: f32,
@@ -100,6 +112,7 @@ pub const Connection = struct {
     cave_person_id: usize,
     cave_type: CaveType,
     stick_has_control: bool,
+    slot_index: u8,
 };
 
 pub const Person = struct {
@@ -109,14 +122,22 @@ pub const Person = struct {
     age: u8,
     kind: PersonType,
     place: Place,
+    location: Vec2,
     moods: MoodLevels,
     kinks: KinkLevels,
     skills: SkillLevels,
     owned_by_id: ?usize,
 };
 
+pub const place_size: f32 = 100.0;
+pub const person_radius: f32 = 1.0;
+pub const connection_distance: f32 = 10.0;
+pub const settled_connection_distance: f32 = 3.0;
+pub const max_move_units_per_second: f32 = 3.0;
+pub const min_person_separation: f32 = person_radius * 2.0;
+
 pub const World = struct {
-    pub const place_capacity: usize = 100;
+    pub const place_capacity: usize = 40;
 
     people: std.ArrayList(Person),
     connections: std.ArrayList(Connection),
@@ -191,12 +212,110 @@ pub inline fn clampStat(value: f32) f32 {
     return @max(0.0, @min(value, 100.0));
 }
 
+pub fn placeRect(place: Place) PlaceRect {
+    const index = @intFromEnum(place);
+    const col: f32 = @floatFromInt(index % 2);
+    const row: f32 = @floatFromInt(index / 2);
+    return .{
+        .x = col * (place_size + 20.0),
+        .y = row * (place_size + 20.0),
+        .w = place_size,
+        .h = place_size,
+    };
+}
+
+pub fn distanceSquared(a: Vec2, b: Vec2) f32 {
+    const dx = a.x - b.x;
+    const dy = a.y - b.y;
+    return (dx * dx) + (dy * dy);
+}
+
+pub fn distance(a: Vec2, b: Vec2) f32 {
+    return @sqrt(distanceSquared(a, b));
+}
+
+pub fn normalize(delta: Vec2) Vec2 {
+    const length_sq = (delta.x * delta.x) + (delta.y * delta.y);
+    if (length_sq <= 0.0001) return .{ .x = 0.0, .y = 0.0 };
+
+    const inv_len = 1.0 / @sqrt(length_sq);
+    return .{
+        .x = delta.x * inv_len,
+        .y = delta.y * inv_len,
+    };
+}
+
+pub fn clampLocationToPlace(location: Vec2) Vec2 {
+    return .{
+        .x = @max(person_radius, @min(location.x, place_size - person_radius)),
+        .y = @max(person_radius, @min(location.y, place_size - person_radius)),
+    };
+}
+
+pub fn locationsCollide(a: Vec2, b: Vec2) bool {
+    return distanceSquared(a, b) < (min_person_separation * min_person_separation);
+}
+
+pub fn locationOccupied(location: Vec2, place: Place, people: []const Person, ignore_person_id: ?usize) bool {
+    for (people) |person| {
+        if (person.place != place) continue;
+        if (ignore_person_id != null and person.id == ignore_person_id.?) continue;
+        if (locationsCollide(location, person.location)) return true;
+    }
+    return false;
+}
+
+pub fn connectionSlotOffset(slot_index: u8) Vec2 {
+    return switch (slot_index) {
+        1 => .{ .x = 0.0, .y = -settled_connection_distance },
+        2 => .{ .x = settled_connection_distance, .y = -settled_connection_distance },
+        3 => .{ .x = settled_connection_distance, .y = 0.0 },
+        4 => .{ .x = settled_connection_distance, .y = settled_connection_distance },
+        5 => .{ .x = 0.0, .y = settled_connection_distance },
+        6 => .{ .x = -settled_connection_distance, .y = settled_connection_distance },
+        7 => .{ .x = -settled_connection_distance, .y = 0.0 },
+        8 => .{ .x = -settled_connection_distance, .y = -settled_connection_distance },
+        else => .{ .x = settled_connection_distance, .y = 0.0 },
+    };
+}
+
+pub fn connectionSlotLocation(cave_location: Vec2, slot_index: u8) Vec2 {
+    const offset = connectionSlotOffset(slot_index);
+    return clampLocationToPlace(.{
+        .x = cave_location.x + offset.x,
+        .y = cave_location.y + offset.y,
+    });
+}
+
+pub fn lowestAvailableConnectionSlot(connections: []const Connection, cave_person_id: usize) ?u8 {
+    var used = [_]bool{false} ** 8;
+    for (connections) |connection| {
+        if (connection.cave_person_id != cave_person_id) continue;
+        if (connection.slot_index >= 1 and connection.slot_index <= 8) {
+            used[connection.slot_index - 1] = true;
+        }
+    }
+
+    for (used, 0..) |taken, i| {
+        if (!taken) return @as(u8, @intCast(i + 1));
+    }
+    return null;
+}
+
 pub inline fn hasStick(kind: PersonType) bool {
     return kind == .male or kind == .futa;
 }
 
 pub inline fn hasCaves(kind: PersonType) bool {
     return kind == .female or kind == .futa;
+}
+
+pub fn compatibleConnectionPair(person: Person, other: Person) bool {
+    return switch (person.kind) {
+        .male => other.kind == .female or other.kind == .futa,
+        .female => other.kind == .male or other.kind == .futa,
+        .futa => true,
+    };
 }
 
 pub fn caveCapacity(skill: f32, cave_type: CaveType) u8 {
@@ -297,15 +416,29 @@ pub fn personConnectionCount(person_id: usize, connections: []const Connection) 
     return count;
 }
 
-pub fn canStickConnectToCave(stick_person: Person, cave_person: Person, connections: []const Connection) bool {
+pub fn canStickConnectToCaveIgnoringDistance(stick_person: Person, cave_person: Person, connections: []const Connection) bool {
     if (stick_person.id == cave_person.id or stick_person.place != cave_person.place) return false;
     if (!hasStick(stick_person.kind) or !hasCaves(cave_person.kind)) return false;
     if (personHasStickConnection(stick_person.id, connections)) return false;
     return openCaveSlots(cave_person, connections) > 0;
 }
 
+pub fn canStickConnectToCave(stick_person: Person, cave_person: Person, connections: []const Connection) bool {
+    if (!canStickConnectToCaveIgnoringDistance(stick_person, cave_person, connections)) return false;
+    return distance(stick_person.location, cave_person.location) <= connection_distance;
+}
+
 pub fn personCanAttemptConnection(person: Person, other: Person, connections: []const Connection) bool {
     if (!canStickConnectToCave(person, other, connections) and !canStickConnectToCave(other, person, connections)) {
+        return false;
+    }
+    if (ownerOwnedPair(person, other)) return true;
+    return person.moods.energy >= 50 and other.moods.energy >= 50;
+}
+
+pub fn personCanPursueConnection(person: Person, other: Person, connections: []const Connection) bool {
+    if (!compatibleConnectionPair(person, other)) return false;
+    if (!canStickConnectToCaveIgnoringDistance(person, other, connections) and !canStickConnectToCaveIgnoringDistance(other, person, connections)) {
         return false;
     }
     if (ownerOwnedPair(person, other)) return true;
@@ -416,6 +549,7 @@ fn spawnPersonInPlace(world_state: *World, place: Place, random: std.Random, all
         .age = randomAge(random),
         .kind = kind,
         .place = place,
+        .location = findSpawnLocation(place, world_state.people.items, random),
         .moods = randomMoodLevels(random),
         .kinks = randomKinkLevels(random),
         .skills = randomSkillLevels(random),
@@ -423,6 +557,28 @@ fn spawnPersonInPlace(world_state: *World, place: Place, random: std.Random, all
     };
 
     _ = try world_state.addPerson(new_person, allocator);
+}
+
+fn findSpawnLocation(place: Place, people: []const Person, random: std.Random) Vec2 {
+    var attempts: u8 = 0;
+    while (attempts < 48) : (attempts += 1) {
+        const candidate = clampLocationToPlace(.{
+            .x = person_radius + (random.float(f32) * (place_size - (person_radius * 2.0))),
+            .y = person_radius + (random.float(f32) * (place_size - (person_radius * 2.0))),
+        });
+        if (!locationOccupied(candidate, place, people, null)) return candidate;
+    }
+
+    var y = person_radius;
+    while (y <= place_size - person_radius) : (y += min_person_separation) {
+        var x = person_radius;
+        while (x <= place_size - person_radius) : (x += min_person_separation) {
+            const candidate = Vec2{ .x = x, .y = y };
+            if (!locationOccupied(candidate, place, people, null)) return candidate;
+        }
+    }
+
+    return .{ .x = person_radius, .y = person_radius };
 }
 
 inline fn randomPersonType(random: std.Random) PersonType {
@@ -445,7 +601,7 @@ inline fn randomLastName(random: std.Random) []const u8 {
 }
 
 inline fn randomAge(random: std.Random) u8 {
-    return 14 + random.uintLessThan(u8, 37);
+    return 18 + random.uintLessThan(u8, 33);
 }
 
 inline fn randomPlace(random: std.Random) Place {

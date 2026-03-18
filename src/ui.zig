@@ -276,6 +276,13 @@ fn drawPlaceView(
         y_conn += 36;
     }
 
+    const map_label_y = @max(360, y_conn + 20);
+    drawTextColored(hdc, 620, map_label_y, "Room map (100x100 units):", theme.text);
+    const map_rect = Rect{ .x = 620, .y = map_label_y + 26, .w = 420, .h = 420 };
+    drawPlaceMap(hdc, map_rect, world_state, selected_place, mouse_x, mouse_y, &hovered_person, theme);
+    drawTextColored(hdc, 1055, map_rect.y + 10, "Red: unconnected", theme.text);
+    drawTextColored(hdc, 1055, map_rect.y + 30, "Green: connected", theme.text);
+
     if (hovered_person) |person| {
         try drawPersonTooltip(hdc, client_rect, mouse_x, mouse_y, person, world_state.people.items, world_state.connections.items, theme);
     }
@@ -351,6 +358,22 @@ fn drawButton(hdc: win.HDC, rect: Rect, label: []const u8, hovered: bool, theme:
     drawTextColored(hdc, rect.x + 10, rect.y + 10, label, theme.text);
 }
 
+fn drawFilledCircle(hdc: win.HDC, center_x: i32, center_y: i32, radius: i32, color: win.COLORREF) void {
+    const brush = win.CreateSolidBrush(color) orelse return;
+    defer _ = win.DeleteObject(@ptrCast(brush));
+
+    const pen = win.CreatePen(win.PS_SOLID, 1, color) orelse return;
+    defer _ = win.DeleteObject(@ptrCast(pen));
+
+    const previous_brush = win.SelectObject(hdc, @ptrCast(brush)) orelse return;
+    defer _ = win.SelectObject(hdc, previous_brush);
+
+    const previous_pen = win.SelectObject(hdc, @ptrCast(pen)) orelse return;
+    defer _ = win.SelectObject(hdc, previous_pen);
+
+    _ = win.Ellipse(hdc, center_x - radius, center_y - radius, center_x + radius, center_y + radius);
+}
+
 fn clampI32(value: i32, min_value: i32, max_value: i32) i32 {
     return @max(min_value, @min(value, max_value));
 }
@@ -382,6 +405,52 @@ fn drawMoodMeterColored(hdc: win.HDC, x: i32, y: i32, label: []const u8, value: 
 
 fn drawMoodMeter(hdc: win.HDC, x: i32, y: i32, label: []const u8, value: f32, theme: Theme) void {
     drawMoodMeterColored(hdc, x, y, label, value, moodColor(value), theme);
+}
+
+fn mapWorldToRect(map_rect: Rect, location: world.Vec2) struct { x: i32, y: i32, radius: i32 } {
+    const scale_x = @as(f32, @floatFromInt(map_rect.w)) / world.place_size;
+    const scale_y = @as(f32, @floatFromInt(map_rect.h)) / world.place_size;
+    const scale = @min(scale_x, scale_y);
+    const radius = @max(2, @as(i32, @intFromFloat(world.person_radius * scale)));
+
+    return .{
+        .x = map_rect.x + @as(i32, @intFromFloat(location.x * scale)),
+        .y = map_rect.y + @as(i32, @intFromFloat(location.y * scale)),
+        .radius = radius,
+    };
+}
+
+fn drawPlaceMap(
+    hdc: win.HDC,
+    map_rect: Rect,
+    world_state: *const world.World,
+    selected_place: world.Place,
+    mouse_x: i32,
+    mouse_y: i32,
+    hovered_person: *?world.Person,
+    theme: Theme,
+) void {
+    drawFrame(hdc, map_rect, theme.panel, theme.border);
+
+    for (world_state.people.items) |person| {
+        if (person.place != selected_place) continue;
+
+        const mapped = mapWorldToRect(map_rect, person.location);
+        if (mouse_x >= mapped.x - mapped.radius and mouse_x <= mapped.x + mapped.radius and
+            mouse_y >= mapped.y - mapped.radius and mouse_y <= mapped.y + mapped.radius)
+        {
+            hovered_person.* = person;
+        }
+
+        const is_connected = world.personConnectionCount(person.id, world_state.connections.items) > 0;
+        drawFilledCircle(
+            hdc,
+            mapped.x,
+            mapped.y,
+            mapped.radius,
+            if (is_connected) rgb(52, 188, 92) else rgb(214, 54, 54),
+        );
+    }
 }
 
 fn drawMoodTriplet(hdc: win.HDC, x: i32, y: i32, moods: world.MoodLevels, theme: Theme) void {
@@ -600,7 +669,7 @@ fn drawPersonTooltip(
     theme: Theme,
 ) !void {
     const tooltip_w: i32 = 540;
-    const tooltip_h: i32 = 246;
+    const tooltip_h: i32 = 264;
     const line_height: i32 = 18;
     const tooltip_x = clampI32(mouse_x + 18, 10, client_rect.right - tooltip_w - 10);
     const tooltip_y = clampI32(mouse_y + 18, 10, client_rect.bottom - tooltip_h - 10);
@@ -618,6 +687,15 @@ fn drawPersonTooltip(
     var identity_buf: [128]u8 = undefined;
     const identity_line = try std.fmt.bufPrint(&identity_buf, "Age {d}  Type {s}  ID #{d}", .{ person.age, person.kind.asString(), person.id });
     drawTextColored(hdc, tooltip_rect.x + 10, y, identity_line, theme.text);
+    y += line_height;
+
+    var location_buf: [128]u8 = undefined;
+    const location_line = try std.fmt.bufPrint(&location_buf, "Location ({d:.1}, {d:.1}) in {s}", .{
+        person.location.x,
+        person.location.y,
+        person.place.asString(),
+    });
+    drawTextColored(hdc, tooltip_rect.x + 10, y, location_line, theme.text);
     y += line_height;
 
     drawTextColored(hdc, tooltip_rect.x + 10, y, "Moods", theme.text);

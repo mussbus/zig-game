@@ -8,6 +8,7 @@ const old_connection_update_interval_seconds: f32 = 10.0;
 const new_connection_update_interval_seconds: f32 = 1.0 / @as(f32, ticks_per_second);
 const connection_rate_scale: f32 = new_connection_update_interval_seconds / old_connection_update_interval_seconds;
 const mood_decay_per_tick: f32 = 1.0 / 30.0;
+const move_units_per_tick: f32 = world.max_move_units_per_second / @as(f32, ticks_per_second);
 const cave_types = [_]world.CaveType{ .top, .front, .back };
 
 const SimEvent = union(enum) {
@@ -198,6 +199,195 @@ fn emitWetEventForStick(world_state: *world.World, person_id: usize) void {
     } });
 }
 
+fn movePersonToward(world_state: *world.World, person_index: usize, target: world.Vec2) void {
+    const current = world_state.people.items[person_index].location;
+    const delta = world.Vec2{
+        .x = target.x - current.x,
+        .y = target.y - current.y,
+    };
+    const distance = world.distance(current, target);
+    if (distance <= 0.001) return;
+
+    const step = @min(distance, move_units_per_tick);
+    const direction = world.normalize(delta);
+    world_state.people.items[person_index].location = world.clampLocationToPlace(.{
+        .x = current.x + (direction.x * step),
+        .y = current.y + (direction.y * step),
+    });
+}
+
+fn connectionGroupPosition(center: world.Vec2, slot_index: u8) world.Vec2 {
+    if (slot_index == 0) return center;
+    return world.connectionSlotLocation(center, slot_index);
+}
+
+fn connectionGroupCenterInBounds(center: world.Vec2) bool {
+    const margin = world.person_radius + world.settled_connection_distance;
+    return center.x >= margin and center.x <= world.place_size - margin and
+        center.y >= margin and center.y <= world.place_size - margin;
+}
+
+fn fullConnectionGroupFitsAt(
+    world_state: *const world.World,
+    place: world.Place,
+    center: world.Vec2,
+    cave_person_id: usize,
+    incoming_stick_id: usize,
+) bool {
+    if (!connectionGroupCenterInBounds(center)) return false;
+
+    var candidate_positions: [9]world.Vec2 = undefined;
+    for (&candidate_positions, 0..) |*position, i| {
+        position.* = connectionGroupPosition(center, @as(u8, @intCast(i)));
+    }
+
+    for (world_state.people.items) |person| {
+        if (person.place != place) continue;
+        if (person.id == cave_person_id or person.id == incoming_stick_id) continue;
+
+        for (candidate_positions) |candidate_position| {
+            if (world.locationsCollide(candidate_position, person.location)) return false;
+        }
+    }
+
+    for (world_state.people.items) |other| {
+        if (other.place != place) continue;
+        if (other.id == cave_person_id) continue;
+        if (!world.hasCaves(other.kind)) continue;
+        if (world.totalCaveOccupancy(other.id, world_state.connections.items) == 0) continue;
+
+        var slot_index: u8 = 0;
+        while (slot_index <= 8) : (slot_index += 1) {
+            const other_position = connectionGroupPosition(other.location, slot_index);
+            for (candidate_positions) |candidate_position| {
+                if (world.locationsCollide(candidate_position, other_position)) return false;
+            }
+        }
+    }
+
+    return true;
+}
+
+fn findSafeConnectionGroupCenter(
+    world_state: *const world.World,
+    cave_person: world.Person,
+    stick_person_id: usize,
+) ?world.Vec2 {
+    if (fullConnectionGroupFitsAt(world_state, cave_person.place, cave_person.location, cave_person.id, stick_person_id)) {
+        return cave_person.location;
+    }
+
+    const margin = world.person_radius + world.settled_connection_distance;
+    var best_location: ?world.Vec2 = null;
+    var best_distance_sq = std.math.inf(f32);
+
+    var y = margin;
+    while (y <= world.place_size - margin) : (y += world.min_person_separation) {
+        var x = margin;
+        while (x <= world.place_size - margin) : (x += world.min_person_separation) {
+            const candidate = world.Vec2{ .x = x, .y = y };
+            if (!fullConnectionGroupFitsAt(world_state, cave_person.place, candidate, cave_person.id, stick_person_id)) continue;
+
+            const distance_sq = world.distanceSquared(candidate, cave_person.location);
+            if (distance_sq < best_distance_sq) {
+                best_distance_sq = distance_sq;
+                best_location = candidate;
+            }
+        }
+    }
+
+    return best_location;
+}
+
+fn personIsConnected(person_id: usize, connections: []const world.Connection) bool {
+    return world.personConnectionCount(person_id, connections) > 0;
+}
+
+fn displacePerson(world_state: *world.World, person_index: usize, delta: world.Vec2) void {
+    const current = world_state.people.items[person_index].location;
+    world_state.people.items[person_index].location = world.clampLocationToPlace(.{
+        .x = current.x + delta.x,
+        .y = current.y + delta.y,
+    });
+}
+
+fn resolveCollisions(world_state: *world.World) void {
+    var pass: u8 = 0;
+    while (pass < 4) : (pass += 1) {
+        var changed = false;
+        for (world_state.people.items, 0..) |left, left_index| {
+            for (world_state.people.items[left_index + 1 ..], left_index + 1..) |right, right_index| {
+                if (left.place != right.place) continue;
+
+                const distance = world.distance(left.location, right.location);
+                if (distance >= world.min_person_separation) continue;
+
+                var direction = world.normalize(.{
+                    .x = right.location.x - left.location.x,
+                    .y = right.location.y - left.location.y,
+                });
+                if (direction.x == 0.0 and direction.y == 0.0) {
+                    direction = if ((left.id + right.id) % 2 == 0)
+                        .{ .x = 1.0, .y = 0.0 }
+                    else
+                        .{ .x = 0.0, .y = 1.0 };
+                }
+
+                const overlap = world.min_person_separation - distance;
+                const left_connected = personIsConnected(left.id, world_state.connections.items);
+                const right_connected = personIsConnected(right.id, world_state.connections.items);
+
+                if (!left_connected and !right_connected) {
+                    const half = overlap * 0.5;
+                    displacePerson(world_state, left_index, .{ .x = -direction.x * half, .y = -direction.y * half });
+                    displacePerson(world_state, right_index, .{ .x = direction.x * half, .y = direction.y * half });
+                } else if (!left_connected) {
+                    displacePerson(world_state, left_index, .{ .x = -direction.x * overlap, .y = -direction.y * overlap });
+                } else if (!right_connected) {
+                    displacePerson(world_state, right_index, .{ .x = direction.x * overlap, .y = direction.y * overlap });
+                } else {
+                    continue;
+                }
+
+                changed = true;
+            }
+        }
+        if (!changed) break;
+    }
+}
+
+fn arrangeConnectionGroup(world_state: *world.World, cave_person_id: usize) void {
+    const cave_index = world.findPersonIndexById(world_state.people.items, cave_person_id) orelse return;
+    const cave_location = world_state.people.items[cave_index].location;
+
+    for (world_state.connections.items) |connection| {
+        if (connection.cave_person_id != cave_person_id) continue;
+        const stick_index = world.findPersonIndexById(world_state.people.items, connection.stick_person_id) orelse continue;
+        world_state.people.items[stick_index].location = world.connectionSlotLocation(cave_location, connection.slot_index);
+    }
+}
+
+fn moveUnconnectedPeople(world_state: *world.World) void {
+    for (world_state.people.items, 0..) |person, person_index| {
+        if (world.personConnectionCount(person.id, world_state.connections.items) != 0) continue;
+
+        var best_target_index: ?usize = null;
+        var best_target_arousal: f32 = -1.0;
+        for (world_state.people.items, 0..) |other, other_index| {
+            if (person.id == other.id) continue;
+            if (!world.personCanPursueConnection(person, other, world_state.connections.items)) continue;
+
+            if (other.moods.aroused > best_target_arousal) {
+                best_target_arousal = other.moods.aroused;
+                best_target_index = other_index;
+            }
+        }
+
+        const target_index = best_target_index orelse continue;
+        movePersonToward(world_state, person_index, world_state.people.items[target_index].location);
+    }
+}
+
 fn updateConnectionActivity(world_state: *world.World, random: std.Random, allocator: std.mem.Allocator) !void {
     for (world_state.connections.items) |connection| {
         const stick_index = world.findPersonIndexById(world_state.people.items, connection.stick_person_id) orelse continue;
@@ -265,6 +455,9 @@ fn updateConnectionActivity(world_state: *world.World, random: std.Random, alloc
         }
     }
 
+    moveUnconnectedPeople(world_state);
+    resolveCollisions(world_state);
+
     for (world_state.people.items) |person| {
         if (!world.personHasStickConnection(person.id, world_state.connections.items) and world.openCaveSlots(person, world_state.connections.items) == 0) {
             continue;
@@ -286,12 +479,21 @@ fn updateConnectionActivity(world_state: *world.World, random: std.Random, alloc
             const stick = world.findPersonById(world_state.people.items, proposal.stick_person_id) orelse continue;
             const cave = world.findPersonById(world_state.people.items, proposal.cave_person_id) orelse continue;
             const stick_has_control = world.ownerOwnedPair(person, other) or random.float(f64) < world.controlChance(stick, cave);
+            const slot_index = world.lowestAvailableConnectionSlot(world_state.connections.items, proposal.cave_person_id) orelse continue;
+            if (world.totalCaveOccupancy(proposal.cave_person_id, world_state.connections.items) == 0) {
+                const safe_center = findSafeConnectionGroupCenter(world_state, cave, proposal.stick_person_id) orelse continue;
+                const cave_index = world.findPersonIndexById(world_state.people.items, proposal.cave_person_id) orelse continue;
+                world_state.people.items[cave_index].location = safe_center;
+            }
             try world_state.connections.append(allocator, .{
                 .stick_person_id = proposal.stick_person_id,
                 .cave_person_id = proposal.cave_person_id,
                 .cave_type = proposal.cave_type,
                 .stick_has_control = stick_has_control,
+                .slot_index = slot_index,
             });
+            arrangeConnectionGroup(world_state, proposal.cave_person_id);
+            resolveCollisions(world_state);
             break;
         }
     }

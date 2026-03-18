@@ -18,6 +18,7 @@ pub const win = struct {
     pub const HWND = windows.HWND;
     pub const HDC = windows.HDC;
     pub const HBRUSH = windows.HBRUSH;
+    pub const HPEN = *opaque {};
     pub const HBITMAP = *opaque {};
     pub const HCURSOR = windows.HCURSOR;
     pub const HMENU = windows.HMENU;
@@ -65,6 +66,7 @@ pub const win = struct {
     pub const SRCCOPY: u32 = 0x00CC0020;
     pub const TRANSPARENT: i32 = 1;
     pub const IDC_ARROW: [*:0]const u8 = @ptrFromInt(32512);
+    pub const PS_SOLID: i32 = 0;
 
     pub extern "kernel32" fn GetModuleHandleA(lpModuleName: ?[*:0]const u8) callconv(.winapi) ?HINSTANCE;
     pub extern "user32" fn RegisterClassA(lpWndClass: *const WNDCLASSA) callconv(.winapi) ATOM;
@@ -96,6 +98,7 @@ pub const win = struct {
     pub extern "user32" fn FillRect(hDC: HDC, lprc: *const RECT, hbr: HBRUSH) callconv(.winapi) i32;
     pub extern "user32" fn FrameRect(hDC: HDC, lprc: *const RECT, hbr: HBRUSH) callconv(.winapi) i32;
     pub extern "gdi32" fn CreateSolidBrush(color: COLORREF) callconv(.winapi) ?HBRUSH;
+    pub extern "gdi32" fn CreatePen(iStyle: i32, cWidth: i32, color: COLORREF) callconv(.winapi) ?HPEN;
     pub extern "gdi32" fn CreateCompatibleDC(hdc: HDC) callconv(.winapi) ?HDC;
     pub extern "gdi32" fn CreateCompatibleBitmap(hdc: HDC, cx: i32, cy: i32) callconv(.winapi) ?HBITMAP;
     pub extern "gdi32" fn DeleteObject(ho: HGDIOBJ) callconv(.winapi) BOOL;
@@ -106,4 +109,5 @@ pub const win = struct {
     pub extern "gdi32" fn SetBkMode(hdc: HDC, mode: i32) callconv(.winapi) i32;
     pub extern "gdi32" fn TextOutA(hdc: HDC, x: i32, y: i32, text: [*]const u8, len: i32) callconv(.winapi) BOOL;
     pub extern "gdi32" fn BitBlt(hdc: HDC, x: i32, y: i32, cx: i32, cy: i32, hdc_src: HDC, x1: i32, y1: i32, rop: u32) callconv(.winapi) BOOL;
+    pub extern "gdi32" fn Ellipse(hdc: HDC, left: i32, top: i32, right: i32, bottom: i32) callconv(.winapi) BOOL;
 };
