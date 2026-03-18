@@ -404,8 +404,8 @@ fn updateConnectionActivity(world_state: *world.World, random: std.Random, alloc
         const connection_count = world.personConnectionCount(person.id, world_state.connections.items);
         if (connection_count == 0) {
             world_state.people.items[i].moods.energy = world.clampStat(person.moods.energy + (2.0 * connection_rate_scale));
-            const increase = world.connectablePeopleCount(person, world_state.people.items, world_state.connections.items);
-            world_state.people.items[i].moods.aroused = world.clampStat(person.moods.aroused + (@as(f32, @floatFromInt(increase)) * (3.0 * connection_rate_scale)));
+            const attraction_score = world.attractionOpportunityScore(person, world_state.people.items, world_state.connections.items);
+            world_state.people.items[i].moods.aroused = world.clampStat(person.moods.aroused + (attraction_score * (3.0 * connection_rate_scale)));
             continue;
         }
 
@@ -470,7 +470,8 @@ fn updateConnectionActivity(world_state: *world.World, random: std.Random, alloc
             const should_connect = if (world.ownerOwnedPair(person, other))
                 true
             else blk: {
-                const odds = (@as(f64, person.moods.aroused) / 100.0) * (@as(f64, other.moods.aroused) / 100.0);
+                const mutual_attraction = @as(f64, world.attractionScore(person, other)) * @as(f64, world.attractionScore(other, person));
+                const odds = ((@as(f64, person.moods.aroused) / 100.0) * (@as(f64, other.moods.aroused) / 100.0)) * mutual_attraction;
                 break :blk random.float(f64) < chancePerCheck(odds);
             };
             if (!should_connect) continue;

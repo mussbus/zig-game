@@ -57,6 +57,106 @@ pub const PersonType = enum(u8) {
     }
 };
 
+pub const Color = struct {
+    r: u8,
+    g: u8,
+    b: u8,
+};
+
+pub const Race = enum(u8) {
+    african,
+    east_asian,
+    european,
+    latino,
+    middle_eastern,
+    south_asian,
+    native_american,
+    pacific_islander,
+    mixed,
+
+    pub fn asString(self: Race) []const u8 {
+        return switch (self) {
+            .african => "African",
+            .east_asian => "East Asian",
+            .european => "European",
+            .latino => "Latino",
+            .middle_eastern => "Middle Eastern",
+            .south_asian => "South Asian",
+            .native_american => "Native American",
+            .pacific_islander => "Pacific Islander",
+            .mixed => "Mixed",
+        };
+    }
+};
+
+pub const HairColor = enum(u8) {
+    blonde,
+    brunette,
+    black,
+    auburn,
+    red,
+    gray,
+    white,
+
+    pub fn asString(self: HairColor) []const u8 {
+        return switch (self) {
+            .blonde => "blonde",
+            .brunette => "brunette",
+            .black => "black",
+            .auburn => "auburn",
+            .red => "red",
+            .gray => "gray",
+            .white => "white",
+        };
+    }
+};
+
+pub const HairLength = enum(u8) {
+    shaved,
+    short,
+    medium,
+    long,
+    very_long,
+
+    pub fn asString(self: HairLength) []const u8 {
+        return switch (self) {
+            .shaved => "shaved",
+            .short => "short",
+            .medium => "medium",
+            .long => "long",
+            .very_long => "very long",
+        };
+    }
+};
+
+pub const HairStyle = enum(u8) {
+    straight,
+    wavy,
+    curly,
+    coily,
+    bob,
+    ponytail,
+    bun,
+    braid,
+    pixie,
+    mohawk,
+
+    pub fn asString(self: HairStyle) []const u8 {
+        return switch (self) {
+            .straight => "straight",
+            .wavy => "wavy",
+            .curly => "curly",
+            .coily => "coily",
+            .bob => "bob",
+            .ponytail => "ponytail",
+            .bun => "bun",
+            .braid => "braid",
+            .pixie => "pixie",
+            .mohawk => "mohawk",
+        };
+    }
+};
+
 pub const MoodLevels = struct {
     aroused: f32,
     energy: f32,
@@ -101,6 +201,20 @@ pub const SkillLevels = struct {
     control: f32,
 };
 
+pub const AttractionProfile = struct {
+    preferred_height_cm: u16,
+    height_tolerance_cm: u16,
+    preferred_age: u8,
+    age_tolerance: u8,
+    preferred_race: Race,
+    preferred_hair_color: HairColor,
+    height_weight: f32,
+    age_weight: f32,
+    race_weight: f32,
+    hair_weight: f32,
+    baseline: f32,
+};
+
 pub const CaveType = enum {
     top,
     front,
@@ -120,12 +234,20 @@ pub const Person = struct {
     first_name: []const u8,
     last_name: []const u8,
     age: u8,
+    height_cm: u16,
+    race: Race,
+    skin_color: Color,
+    hair_color_kind: HairColor,
+    hair_color: Color,
+    hair_length: HairLength,
+    hair_style: HairStyle,
     kind: PersonType,
     place: Place,
     location: Vec2,
     moods: MoodLevels,
     kinks: KinkLevels,
     skills: SkillLevels,
+    attraction: AttractionProfile,
     owned_by_id: ?usize,
 };
 
@@ -453,6 +575,35 @@ pub fn connectablePeopleCount(person: Person, people: []const Person, connection
     return count;
 }
 
+pub fn attractionScore(person: Person, other: Person) f32 {
+    if (!compatibleConnectionPair(person, other)) return 0.0;
+
+    const profile = person.attraction;
+    const height_score = preferenceScoreU16(other.height_cm, profile.preferred_height_cm, profile.height_tolerance_cm);
+    const age_score = preferenceScoreU8(other.age, profile.preferred_age, profile.age_tolerance);
+    const race_score: f32 = if (other.race == profile.preferred_race) 1.0 else 0.35;
+    const hair_score: f32 = if (other.hair_color_kind == profile.preferred_hair_color) 1.0 else 0.3;
+
+    const total_weight = profile.height_weight + profile.age_weight + profile.race_weight + profile.hair_weight;
+    const weighted_score =
+        (height_score * profile.height_weight) +
+        (age_score * profile.age_weight) +
+        (race_score * profile.race_weight) +
+        (hair_score * profile.hair_weight);
+
+    const normalized = if (total_weight <= 0.0) 0.0 else weighted_score / total_weight;
+    return clampPreference(profile.baseline + ((1.0 - profile.baseline) * normalized));
+}
+
+pub fn attractionOpportunityScore(person: Person, people: []const Person, connections: []const Connection) f32 {
+    var score: f32 = 0.0;
+    for (people) |other| {
+        if (!personCanAttemptConnection(person, other, connections)) continue;
+        score += attractionScore(person, other);
+    }
+    return score;
+}
+
 pub fn ownerCanOwn(owner_kind: PersonType, owned_kind: PersonType) bool {
     return switch (owned_kind) {
         .male => false,
@@ -542,17 +693,29 @@ pub fn caveTypeLabel(cave_type: CaveType) []const u8 {
 
 fn spawnPersonInPlace(world_state: *World, place: Place, random: std.Random, allocator: std.mem.Allocator) !void {
     const kind = randomPersonType(random);
+    const race = randomRace(random);
+    const hair_color_kind = randomHairColor(random);
+    const age = randomAge(random);
+    const height_cm = randomHeightCm(kind, random);
     const new_person = Person{
         .id = world_state.totalPeople() + 1,
         .first_name = randomFirstName(kind, random),
         .last_name = randomLastName(random),
-        .age = randomAge(random),
+        .age = age,
+        .height_cm = height_cm,
+        .race = race,
+        .skin_color = randomSkinColor(race, random),
+        .hair_color_kind = hair_color_kind,
+        .hair_color = randomHairColorValue(hair_color_kind, random),
+        .hair_length = randomHairLength(random),
+        .hair_style = randomHairStyle(random),
         .kind = kind,
         .place = place,
         .location = findSpawnLocation(place, world_state.people.items, random),
         .moods = randomMoodLevels(random),
         .kinks = randomKinkLevels(random),
         .skills = randomSkillLevels(random),
+        .attraction = randomAttractionProfile(age, height_cm, random),
         .owned_by_id = randomOwnedById(kind, place, world_state.people.items, random),
     };
 
@@ -604,8 +767,84 @@ inline fn randomAge(random: std.Random) u8 {
     return 18 + random.uintLessThan(u8, 33);
 }
 
+fn randomHeightCm(kind: PersonType, random: std.Random) u16 {
+    const HeightParams = struct {
+        mean: f32,
+        sd: f32,
+    };
+
+    const params: HeightParams = switch (kind) {
+        .male => .{ .mean = 170.0, .sd = 10.0 },
+        .female => .{ .mean = 150.0, .sd = 6.0 },
+        .futa => .{ .mean = 180.0, .sd = 3.0 },
+    };
+
+    const sampled = randomNormalF32(random, params.mean, params.sd);
+    const clamped = @max(120.0, @min(sampled, 240.0));
+    return @as(u16, @intFromFloat(@round(clamped)));
+}
+
+fn randomNormalF32(random: std.Random, mean: f32, sd: f32) f32 {
+    const uniform_1 = @max(random.float(f32), 0.0001);
+    const uniform_2 = random.float(f32);
+    const radius = @sqrt(-2.0 * @log(uniform_1));
+    const theta = 2.0 * std.math.pi * uniform_2;
+    return mean + (sd * radius * @cos(theta));
+}
+
 inline fn randomPlace(random: std.Random) Place {
     return @enumFromInt(random.uintLessThan(u8, 10));
+}
+
+fn randomAttractionProfile(age: u8, height_cm: u16, random: std.Random) AttractionProfile {
+    const preferred_age_raw = @as(i32, age) + randomSignedOffset(8, random);
+    const preferred_height_raw = @as(i32, height_cm) + randomSignedOffset(20, random);
+
+    return .{
+        .preferred_height_cm = @as(u16, @intCast(@max(135, @min(preferred_height_raw, 225)))),
+        .height_tolerance_cm = 8 + random.uintLessThan(u16, 23),
+        .preferred_age = @as(u8, @intCast(@max(18, @min(preferred_age_raw, 50)))),
+        .age_tolerance = 3 + random.uintLessThan(u8, 13),
+        .preferred_race = randomRace(random),
+        .preferred_hair_color = randomHairColor(random),
+        .height_weight = randomPreferenceWeight(random),
+        .age_weight = randomPreferenceWeight(random),
+        .race_weight = randomPreferenceWeight(random),
+        .hair_weight = randomPreferenceWeight(random),
+        .baseline = 0.1 + (random.float(f32) * 0.35),
+    };
+}
+
+inline fn randomRace(random: std.Random) Race {
+    return @enumFromInt(random.uintLessThan(u8, 9));
+}
+
+inline fn randomHairColor(random: std.Random) HairColor {
+    const roll = random.uintLessThan(u8, 100);
+    if (roll < 22) return .black;
+    if (roll < 49) return .brunette;
+    if (roll < 66) return .blonde;
+    if (roll < 78) return .red;
+    if (roll < 88) return .auburn;
+    if (roll < 96) return .gray;
+    return .white;
+}
+
+inline fn randomHairLength(random: std.Random) HairLength {
+    return @enumFromInt(random.uintLessThan(u8, 5));
+}
+
+inline fn randomHairStyle(random: std.Random) HairStyle {
+    return @enumFromInt(random.uintLessThan(u8, 10));
+}
+
+inline fn randomPreferenceWeight(random: std.Random) f32 {
+    return 0.35 + (random.float(f32) * 0.9);
+}
+
+fn randomSignedOffset(max_abs: i32, random: std.Random) i32 {
+    const span = (max_abs * 2) + 1;
+    return @as(i32, @intCast(random.uintLessThan(u16, @as(u16, @intCast(span))))) - max_abs;
 }
 
 inline fn randomLevel(random: std.Random) f32 {
@@ -648,4 +887,63 @@ fn randomSkillLevels(random: std.Random) SkillLevels {
         .submit = randomLevel(random),
         .control = randomLevel(random),
     };
+}
+
+fn randomSkinColor(race: Race, random: std.Random) Color {
+    return switch (race) {
+        .african => varyColor(.{ .r = 92, .g = 60, .b = 42 }, 26, random),
+        .east_asian => varyColor(.{ .r = 218, .g = 188, .b = 154 }, 20, random),
+        .european => varyColor(.{ .r = 236, .g = 204, .b = 176 }, 24, random),
+        .latino => varyColor(.{ .r = 191, .g = 143, .b = 104 }, 26, random),
+        .middle_eastern => varyColor(.{ .r = 182, .g = 136, .b = 97 }, 24, random),
+        .south_asian => varyColor(.{ .r = 145, .g = 103, .b = 73 }, 24, random),
+        .native_american => varyColor(.{ .r = 176, .g = 129, .b = 91 }, 24, random),
+        .pacific_islander => varyColor(.{ .r = 154, .g = 112, .b = 82 }, 24, random),
+        .mixed => varyColor(.{ .r = 178, .g = 132, .b = 96 }, 44, random),
+    };
+}
+
+fn randomHairColorValue(kind: HairColor, random: std.Random) Color {
+    return switch (kind) {
+        .blonde => varyColor(.{ .r = 224, .g = 196, .b = 108 }, 26, random),
+        .brunette => varyColor(.{ .r = 96, .g = 62, .b = 38 }, 20, random),
+        .black => varyColor(.{ .r = 36, .g = 28, .b = 24 }, 10, random),
+        .auburn => varyColor(.{ .r = 128, .g = 64, .b = 42 }, 18, random),
+        .red => varyColor(.{ .r = 176, .g = 74, .b = 42 }, 20, random),
+        .gray => varyColor(.{ .r = 156, .g = 156, .b = 156 }, 18, random),
+        .white => varyColor(.{ .r = 228, .g = 226, .b = 218 }, 16, random),
+    };
+}
+
+fn varyColor(base: Color, spread: u8, random: std.Random) Color {
+    return .{
+        .r = varyChannel(base.r, spread, random),
+        .g = varyChannel(base.g, spread, random),
+        .b = varyChannel(base.b, spread, random),
+    };
+}
+
+fn varyChannel(base: u8, spread: u8, random: std.Random) u8 {
+    const span = (@as(i32, spread) * 2) + 1;
+    const offset = @as(i32, @intCast(random.uintLessThan(u16, @as(u16, @intCast(span))))) - @as(i32, spread);
+    const value = @as(i32, base) + offset;
+    return @as(u8, @intCast(@max(0, @min(value, 255))));
+}
+
+fn preferenceScoreU16(actual: u16, preferred: u16, tolerance: u16) f32 {
+    return preferenceScoreF32(@as(f32, @floatFromInt(actual)), @as(f32, @floatFromInt(preferred)), @as(f32, @floatFromInt(tolerance)));
+}
+
+fn preferenceScoreU8(actual: u8, preferred: u8, tolerance: u8) f32 {
+    return preferenceScoreF32(@as(f32, @floatFromInt(actual)), @as(f32, @floatFromInt(preferred)), @as(f32, @floatFromInt(tolerance)));
+}
+
+fn preferenceScoreF32(actual: f32, preferred: f32, tolerance: f32) f32 {
+    const safe_tolerance = @max(tolerance, 1.0);
+    const delta = @abs(actual - preferred);
+    return clampPreference(1.0 - (delta / safe_tolerance));
+}
+
+fn clampPreference(value: f32) f32 {
+    return @max(0.0, @min(value, 1.0));
 }

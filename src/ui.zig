@@ -247,9 +247,26 @@ fn drawPlaceView(
             hovered_person = person;
             hovered_person_tooltip_style = .solid;
         }
-        var person_buf: [220]u8 = undefined;
-        const person_line = try std.fmt.bufPrint(&person_buf, "#{d} {s} {s}, age {d} ({s})", .{ person.id, person.first_name, person.last_name, person.age, person.kind.asString() });
+        var person_buf: [256]u8 = undefined;
+        const person_line = try std.fmt.bufPrint(&person_buf, "#{d} {s} {s}, age {d}, {d}cm, {s}, {s} hair", .{
+            person.id,
+            person.first_name,
+            person.last_name,
+            person.age,
+            person.height_cm,
+            person.race.asString(),
+            person.hair_color_kind.asString(),
+        });
         drawTextColored(hdc, 30, y_people, person_line, theme.text);
+        y_people += 18;
+
+        var person_meta_buf: [220]u8 = undefined;
+        const person_meta_line = try std.fmt.bufPrint(&person_meta_buf, "    {s}  {s} {s}", .{
+            person.kind.asString(),
+            person.hair_length.asString(),
+            person.hair_style.asString(),
+        });
+        drawTextColored(hdc, 30, y_people, person_meta_line, theme.text);
         y_people += 18;
     }
 
@@ -321,6 +338,10 @@ fn blendColor(foreground: win.COLORREF, background: win.COLORREF, alpha: f32) wi
         (@as(f32, @floatFromInt(colorChannel(background, 16))) * inv_alpha)));
 
     return rgb(r, g, b);
+}
+
+fn colorRefFromWorld(color: world.Color) win.COLORREF {
+    return rgb(color.r, color.g, color.b);
 }
 
 fn currentTheme(dark_mode: bool) Theme {
@@ -427,6 +448,16 @@ fn drawFilledCircle(hdc: win.HDC, center_x: i32, center_y: i32, radius: i32, col
     _ = win.Ellipse(hdc, center_x - radius, center_y - radius, center_x + radius, center_y + radius);
 }
 
+fn drawPersonMarker(hdc: win.HDC, center_x: i32, center_y: i32, radius: i32, person: world.Person, accent: win.COLORREF, theme: Theme, is_hovered: bool) void {
+    const accent_color = if (is_hovered) blendColor(accent, theme.panel, 0.5) else accent;
+    const skin_color = if (is_hovered) blendColor(colorRefFromWorld(person.skin_color), theme.panel, 0.4) else colorRefFromWorld(person.skin_color);
+    const hair_color = if (is_hovered) blendColor(colorRefFromWorld(person.hair_color), theme.panel, 0.35) else colorRefFromWorld(person.hair_color);
+
+    drawFilledCircle(hdc, center_x, center_y, radius + 2, accent_color);
+    drawFilledCircle(hdc, center_x, center_y, radius, skin_color);
+    drawFilledCircle(hdc, center_x, center_y, @max(1, radius - 1), hair_color);
+}
+
 fn clampI32(value: i32, min_value: i32, max_value: i32) i32 {
     return @max(min_value, @min(value, max_value));
 }
@@ -500,13 +531,7 @@ fn drawPlaceMap(
         const is_connected = world.personConnectionCount(person.id, world_state.connections.items) > 0;
         const base_color = if (is_connected) rgb(52, 188, 92) else rgb(214, 54, 54);
         const is_hovered = hovered_person.* != null and hovered_person.*.?.id == person.id;
-        drawFilledCircle(
-            hdc,
-            mapped.x,
-            mapped.y,
-            mapped.radius,
-            if (is_hovered) blendColor(base_color, theme.panel, 0.5) else base_color,
-        );
+        drawPersonMarker(hdc, mapped.x, mapped.y, mapped.radius, person, base_color, theme, is_hovered);
     }
 }
 
@@ -731,7 +756,7 @@ fn drawPersonTooltip(
     theme: Theme,
 ) !void {
     const tooltip_w: i32 = 540;
-    const tooltip_h: i32 = 264;
+    const tooltip_h: i32 = 336;
     const line_height: i32 = 18;
     const tooltip_x = clampI32(mouse_x + 18, 10, client_rect.right - tooltip_w - 10);
     const tooltip_y = clampI32(mouse_y + 18, 10, client_rect.bottom - tooltip_h - 10);
@@ -750,8 +775,31 @@ fn drawPersonTooltip(
     y += line_height;
 
     var identity_buf: [128]u8 = undefined;
-    const identity_line = try std.fmt.bufPrint(&identity_buf, "Age {d}  Type {s}  ID #{d}", .{ person.age, person.kind.asString(), person.id });
+    const identity_line = try std.fmt.bufPrint(&identity_buf, "Age {d}  Height {d}cm  Type {s}  ID #{d}", .{
+        person.age,
+        person.height_cm,
+        person.kind.asString(),
+        person.id,
+    });
     drawTextColored(hdc, tooltip_rect.x + 10, y, identity_line, theme.text);
+    y += line_height;
+
+    var appearance_buf: [180]u8 = undefined;
+    const appearance_line = try std.fmt.bufPrint(&appearance_buf, "Race {s}  Hair {s}, {s}, {s}", .{
+        person.race.asString(),
+        person.hair_color_kind.asString(),
+        person.hair_length.asString(),
+        person.hair_style.asString(),
+    });
+    drawTextColored(hdc, tooltip_rect.x + 10, y, appearance_line, theme.text);
+    y += line_height;
+
+    const skin_rect = Rect{ .x = tooltip_rect.x + 10, .y = y + 2, .w = 24, .h = 12 };
+    const hair_rect = Rect{ .x = tooltip_rect.x + 144, .y = y + 2, .w = 24, .h = 12 };
+    drawFrame(hdc, skin_rect, colorRefFromWorld(person.skin_color), theme.border);
+    drawTextColored(hdc, tooltip_rect.x + 42, y, "Skin tone", theme.text);
+    drawFrame(hdc, hair_rect, colorRefFromWorld(person.hair_color), theme.border);
+    drawTextColored(hdc, tooltip_rect.x + 176, y, "Hair color", theme.text);
     y += line_height;
 
     var location_buf: [128]u8 = undefined;
