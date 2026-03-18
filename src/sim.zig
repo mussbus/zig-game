@@ -389,12 +389,21 @@ fn moveUnconnectedPeople(world_state: *world.World) void {
 }
 
 fn updateConnectionActivity(world_state: *world.World, random: std.Random, allocator: std.mem.Allocator) !void {
-    for (world_state.connections.items) |connection| {
+    for (world_state.connections.items, 0..) |connection, connection_index| {
         const stick_index = world.findPersonIndexById(world_state.people.items, connection.stick_person_id) orelse continue;
         const cave_index = world.findPersonIndexById(world_state.people.items, connection.cave_person_id) orelse continue;
 
         applyConnectionEnergyLoss(world_state, stick_index, 3.0 * connection_rate_scale);
-        applyConnectionEnergyLoss(world_state, cave_index, 3.0 * connection_rate_scale);
+        var cave_loss_applied = false;
+        for (world_state.connections.items[0..connection_index]) |existing_connection| {
+            if (existing_connection.cave_person_id == connection.cave_person_id) {
+                cave_loss_applied = true;
+                break;
+            }
+        }
+        if (!cave_loss_applied) {
+            applyConnectionEnergyLoss(world_state, cave_index, 3.0 * connection_rate_scale);
+        }
 
         increaseStickConnectionHappiness(world_state, stick_index, cave_index, connection, connection_rate_scale);
         world.increaseConnectionHappiness(world_state, cave_index, stick_index, connection_rate_scale);
