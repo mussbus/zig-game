@@ -68,6 +68,7 @@ pub const win = struct {
     pub const WM_ERASEBKGND: UINT = 0x0014;
     pub const WM_QUIT: UINT = 0x0012;
     pub const WM_LBUTTONDOWN: UINT = 0x0201;
+    pub const WM_MOUSEWHEEL: UINT = 0x020A;
     pub const BLACK_BRUSH: i32 = 4;
     pub const SRCCOPY: u32 = 0x00CC0020;
     pub const TRANSPARENT: i32 = 1;
@@ -117,6 +118,7 @@ pub const win = struct {
     pub extern "gdi32" fn TextOutA(hdc: HDC, x: i32, y: i32, text: [*]const u8, len: i32) callconv(.winapi) BOOL;
     pub extern "gdi32" fn BitBlt(hdc: HDC, x: i32, y: i32, cx: i32, cy: i32, hdc_src: HDC, x1: i32, y1: i32, rop: u32) callconv(.winapi) BOOL;
     pub extern "gdi32" fn Ellipse(hdc: HDC, left: i32, top: i32, right: i32, bottom: i32) callconv(.winapi) BOOL;
+    pub extern "gdi32" fn RoundRect(hdc: HDC, left: i32, top: i32, right: i32, bottom: i32, width: i32, height: i32) callconv(.winapi) BOOL;
     pub extern "msimg32" fn AlphaBlend(
         hdcDest: HDC,
         xoriginDest: i32,

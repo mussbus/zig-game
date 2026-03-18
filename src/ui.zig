@@ -28,10 +28,24 @@ const Rect = struct {
     }
 };
 
+const I32Point = struct {
+    x: i32,
+    y: i32,
+};
+
 const UiState = struct {
     paused: bool = false,
     dark_mode: bool = false,
     selected_place: ?world.Place = null,
+    show_people_list: bool = true,
+    show_connections_list: bool = true,
+    people_scroll: i32 = 0,
+    connections_scroll: i32 = 0,
+    filter_modal_open: bool = false,
+    gender_dropdown_open: bool = false,
+    race_dropdown_open: bool = false,
+    selected_gender_mask: u8 = allGenderMask(),
+    selected_race_mask: u16 = allRaceMask(),
 };
 
 const Theme = struct {
@@ -42,6 +56,29 @@ const Theme = struct {
     text: win.COLORREF,
     border: win.COLORREF,
 };
+
+const PlaceViewLayout = struct {
+    people_toggle_rect: Rect,
+    connections_toggle_rect: Rect,
+    filter_button_rect: Rect,
+    people_panel_rect: ?Rect,
+    connections_panel_rect: ?Rect,
+    map_label_pos: I32Point,
+    map_rect: Rect,
+    legend_pos: I32Point,
+};
+
+const FilterModalLayout = struct {
+    modal_rect: Rect,
+    close_button_rect: Rect,
+    gender_button_rect: Rect,
+    race_button_rect: Rect,
+    gender_dropdown_rect: Rect,
+    race_dropdown_rect: Rect,
+};
+
+const person_type_options = [_]world.PersonType{ .male, .female, .futa };
+const race_options = [_]world.Race{ .african, .east_asian, .european, .latino, .middle_eastern, .south_asian, .native_american, .pacific_islander, .mixed };
 
 pub fn run(allocator: std.mem.Allocator) !void {
     var world_state = world.World.init();
@@ -88,6 +125,7 @@ pub fn run(allocator: std.mem.Allocator) !void {
     while (!should_quit) {
         var msg: win.MSG = undefined;
         var click_pos: ?ClickPos = null;
+        var wheel_delta: i32 = 0;
 
         while (win.PeekMessageA(&msg, null, 0, 0, win.PM_REMOVE) != 0) {
             if (msg.message == win.WM_QUIT) {
@@ -100,6 +138,8 @@ pub fn run(allocator: std.mem.Allocator) !void {
                 _ = win.GetCursorPos(&cursor_click);
                 _ = win.ScreenToClient(hwnd, &cursor_click);
                 click_pos = .{ .x = cursor_click.x, .y = cursor_click.y };
+            } else if (msg.message == win.WM_MOUSEWHEEL) {
+                wheel_delta += wheelDeltaFromWParam(msg.wParam);
             }
 
             _ = win.TranslateMessage(&msg);
@@ -135,10 +175,67 @@ pub fn run(allocator: std.mem.Allocator) !void {
                 try world.prefillPlaces(&world_state, random, allocator);
                 tick = 0;
                 ui.selected_place = null;
+                ui.people_scroll = 0;
+                ui.connections_scroll = 0;
                 last_step_ms = std.time.milliTimestamp();
             } else if (ui.selected_place != null and back_rect.contains(click.x, click.y)) {
                 ui.selected_place = null;
+                ui.people_scroll = 0;
+                ui.connections_scroll = 0;
+                ui.filter_modal_open = false;
+                ui.gender_dropdown_open = false;
+                ui.race_dropdown_open = false;
+            } else if (ui.selected_place != null) {
+                const layout = layoutPlaceView(client_rect, ui);
+                if (ui.filter_modal_open) {
+                    handleFilterModalClick(&ui, &world_state, client_rect, click);
+                    clampPlaceViewScroll(&ui, &world_state, ui.selected_place.?, client_rect);
+                } else if (layout.people_toggle_rect.contains(click.x, click.y)) {
+                    ui.show_people_list = !ui.show_people_list;
+                    clampPlaceViewScroll(&ui, &world_state, ui.selected_place.? , client_rect);
+                } else if (layout.filter_button_rect.contains(click.x, click.y)) {
+                    ui.filter_modal_open = true;
+                    ui.gender_dropdown_open = false;
+                    ui.race_dropdown_open = false;
+                } else if (layout.connections_toggle_rect.contains(click.x, click.y)) {
+                    ui.show_connections_list = !ui.show_connections_list;
+                    clampPlaceViewScroll(&ui, &world_state, ui.selected_place.? , client_rect);
+                }
             }
+        }
+
+        if (ui.selected_place) |selected_place| {
+            if (wheel_delta != 0 and !ui.filter_modal_open) {
+                const layout = layoutPlaceView(client_rect, ui);
+                const wheel_steps = @divTrunc(wheel_delta, 120);
+                const scroll_amount = -wheel_steps * 36;
+
+                if (scroll_amount != 0) {
+                    if (layout.people_panel_rect) |panel| {
+                        if (panel.contains(mouse_x, mouse_y)) {
+                            scrollPlaceList(
+                                &ui.people_scroll,
+                                scroll_amount,
+                                listViewportHeight(panel),
+                                peopleContentHeightFiltered(&world_state, selected_place, ui.selected_gender_mask, ui.selected_race_mask),
+                            );
+                        }
+                    }
+
+                    if (layout.connections_panel_rect) |panel| {
+                        if (panel.contains(mouse_x, mouse_y)) {
+                            scrollPlaceList(
+                                &ui.connections_scroll,
+                                scroll_amount,
+                                listViewportHeight(panel),
+                                connectionContentHeight(&world_state, selected_place),
+                            );
+                        }
+                    }
+                }
+            }
+
+            clampPlaceViewScroll(&ui, &world_state, selected_place, client_rect);
         }
 
         while (!ui.paused and std.time.milliTimestamp() - last_step_ms >= sim.step_interval_ms) {
@@ -171,7 +268,7 @@ pub fn run(allocator: std.mem.Allocator) !void {
         drawTextColored(backbuffer_dc, 260, 30, status, theme.text);
 
         if (ui.selected_place) |selected_place| {
-            try drawPlaceView(backbuffer_dc, client_rect, &world_state, mouse_x, mouse_y, selected_place, back_rect, back_hovered, theme);
+            try drawPlaceView(backbuffer_dc, client_rect, &ui, &world_state, mouse_x, mouse_y, selected_place, back_rect, back_hovered, theme);
         } else {
             try drawOverview(backbuffer_dc, &ui, &world_state, mouse_x, mouse_y, click_pos, theme);
         }
@@ -205,7 +302,14 @@ fn drawOverview(
         drawTextColored(hdc, rect.x + 10, rect.y + 45, pop_text, theme.text);
 
         if (click_pos) |click| {
-            if (rect.contains(click.x, click.y)) ui.selected_place = place;
+            if (rect.contains(click.x, click.y)) {
+                ui.selected_place = place;
+                ui.people_scroll = 0;
+                ui.connections_scroll = 0;
+                ui.filter_modal_open = false;
+                ui.gender_dropdown_open = false;
+                ui.race_dropdown_open = false;
+            }
         }
         place_index += 1;
     }
@@ -225,6 +329,7 @@ fn drawOverview(
 fn drawPlaceView(
     hdc: win.HDC,
     client_rect: win.RECT,
+    ui: *const UiState,
     world_state: *const world.World,
     mouse_x: i32,
     mouse_y: i32,
@@ -233,46 +338,546 @@ fn drawPlaceView(
     back_hovered: bool,
     theme: Theme,
 ) !void {
+    const layout = layoutPlaceView(client_rect, ui.*);
     drawButton(hdc, back_rect, "Back", back_hovered, theme);
     drawTextColored(hdc, 130, 80, selected_place.asString(), theme.text);
-
-    drawTextColored(hdc, 20, 130, "People in place:", theme.text);
-    var y_people: i32 = 155;
     var hovered_person: ?world.Person = null;
     var hovered_person_tooltip_style: TooltipStyle = .solid;
-    for (world_state.people.items) |person| {
-        if (person.place != selected_place) continue;
-        const person_rect = Rect{ .x = 24, .y = y_people - 2, .w = 560, .h = 18 };
-        if (person_rect.contains(mouse_x, mouse_y)) {
-            hovered_person = person;
-            hovered_person_tooltip_style = .solid;
-        }
-        var person_buf: [256]u8 = undefined;
-        const person_line = try std.fmt.bufPrint(&person_buf, "#{d} {s} {s}, age {d}, {d}cm, {s}, {s} hair", .{
-            person.id,
-            person.first_name,
-            person.last_name,
-            person.age,
-            person.height_cm,
-            person.race.asString(),
-            person.hair_color_kind.asString(),
-        });
-        drawTextColored(hdc, 30, y_people, person_line, theme.text);
-        y_people += 18;
+    var hovered_connection_group: ?ConnectionGroup = null;
 
-        var person_meta_buf: [220]u8 = undefined;
-        const person_meta_line = try std.fmt.bufPrint(&person_meta_buf, "    {s}  {s} {s}", .{
-            person.kind.asString(),
-            person.hair_length.asString(),
-            person.hair_style.asString(),
-        });
-        drawTextColored(hdc, 30, y_people, person_meta_line, theme.text);
-        y_people += 18;
+    drawButton(
+        hdc,
+        layout.people_toggle_rect,
+        if (ui.show_people_list) "Hide People" else "Show People",
+        layout.people_toggle_rect.contains(mouse_x, mouse_y),
+        theme,
+    );
+    drawButton(
+        hdc,
+        layout.filter_button_rect,
+        "Filter",
+        layout.filter_button_rect.contains(mouse_x, mouse_y),
+        theme,
+    );
+    drawButton(
+        hdc,
+        layout.connections_toggle_rect,
+        if (ui.show_connections_list) "Hide Connections" else "Show Connections",
+        layout.connections_toggle_rect.contains(mouse_x, mouse_y),
+        theme,
+    );
+
+    if (layout.people_panel_rect) |panel| {
+        try drawPeoplePanel(
+            hdc,
+            panel,
+            world_state,
+            selected_place,
+            ui.selected_gender_mask,
+            ui.selected_race_mask,
+            ui.people_scroll,
+            mouse_x,
+            mouse_y,
+            &hovered_person,
+            &hovered_person_tooltip_style,
+            theme,
+        );
     }
 
-    drawTextColored(hdc, 620, 130, "Current connections:", theme.text);
-    var y_conn: i32 = 155;
-    var hovered_connection_group: ?ConnectionGroup = null;
+    if (layout.connections_panel_rect) |panel| {
+        try drawConnectionsPanel(
+            hdc,
+            panel,
+            world_state,
+            selected_place,
+            ui.connections_scroll,
+            mouse_x,
+            mouse_y,
+            &hovered_connection_group,
+            theme,
+        );
+    }
+
+    drawTextColored(hdc, layout.map_label_pos.x, layout.map_label_pos.y, "Room map (100x100 units):", theme.text);
+    drawPlaceMap(hdc, layout.map_rect, world_state, selected_place, mouse_x, mouse_y, &hovered_person, &hovered_person_tooltip_style, theme);
+    drawTextColored(hdc, layout.legend_pos.x, layout.legend_pos.y, "Red: unconnected", theme.text);
+    drawTextColored(hdc, layout.legend_pos.x, layout.legend_pos.y + 20, "Green: connected", theme.text);
+
+    if (ui.filter_modal_open) {
+        try drawFilterModal(hdc, client_rect, ui.*, mouse_x, mouse_y, theme);
+    } else {
+        if (hovered_person) |person| {
+            try drawPersonTooltip(hdc, client_rect, mouse_x, mouse_y, person, world_state.people.items, world_state.connections.items, hovered_person_tooltip_style, theme);
+        }
+
+        if (hovered_connection_group) |group| {
+            try drawConnectionGroupTooltip(hdc, client_rect, mouse_x, mouse_y, group, world_state.people.items, world_state.connections.items, .solid, theme);
+        }
+    }
+}
+
+fn wheelDeltaFromWParam(w_param: win.WPARAM) i32 {
+    const raw = @as(u16, @truncate((w_param >> 16) & 0xffff));
+    return @as(i16, @bitCast(raw));
+}
+
+fn listViewportHeight(panel: Rect) i32 {
+    return @max(0, panel.h - 34);
+}
+
+fn scrollMax(viewport_h: i32, content_h: i32) i32 {
+    return @max(0, content_h - viewport_h);
+}
+
+fn scrollPlaceList(offset: *i32, delta: i32, viewport_h: i32, content_h: i32) void {
+    offset.* = clampI32(offset.* + delta, 0, scrollMax(viewport_h, content_h));
+}
+
+fn genderBit(kind: world.PersonType) u8 {
+    return @as(u8, @intCast(@as(u16, 1) << @as(u3, @intCast(@intFromEnum(kind)))));
+}
+
+fn raceBit(race: world.Race) u16 {
+    return @as(u16, @intCast(@as(u32, 1) << @as(u4, @intCast(@intFromEnum(race)))));
+}
+
+fn allGenderMask() u8 {
+    var mask: u8 = 0;
+    for (person_type_options) |kind| {
+        mask |= genderBit(kind);
+    }
+    return mask;
+}
+
+fn allRaceMask() u16 {
+    var mask: u16 = 0;
+    for (race_options) |race| {
+        mask |= raceBit(race);
+    }
+    return mask;
+}
+
+fn genderSelected(mask: u8, kind: world.PersonType) bool {
+    return (mask & genderBit(kind)) != 0;
+}
+
+fn raceSelected(mask: u16, race: world.Race) bool {
+    return (mask & raceBit(race)) != 0;
+}
+
+fn toggleGenderSelection(mask: *u8, kind: world.PersonType) void {
+    mask.* ^= genderBit(kind);
+}
+
+fn toggleRaceSelection(mask: *u16, race: world.Race) void {
+    mask.* ^= raceBit(race);
+}
+
+fn selectedGenderCount(mask: u8) usize {
+    var count: usize = 0;
+    for (person_type_options) |kind| {
+        if (genderSelected(mask, kind)) count += 1;
+    }
+    return count;
+}
+
+fn selectedRaceCount(mask: u16) usize {
+    var count: usize = 0;
+    for (race_options) |race| {
+        if (raceSelected(mask, race)) count += 1;
+    }
+    return count;
+}
+
+fn peopleCountInPlaceFiltered(world_state: *const world.World, selected_place: world.Place, gender_mask: u8, race_mask: u16) usize {
+    var count: usize = 0;
+    for (world_state.people.items) |person| {
+        if (person.place == selected_place and personMatchesFilters(person, gender_mask, race_mask)) count += 1;
+    }
+    return count;
+}
+
+fn connectionGroupCountInPlace(world_state: *const world.World, selected_place: world.Place) usize {
+    var count: usize = 0;
+    for (world_state.connections.items, 0..) |connection, connection_index| {
+        if (!isConnectionGroupFirstOccurrence(world_state.connections.items, connection_index)) continue;
+
+        const stick = world.findPersonById(world_state.people.items, connection.stick_person_id) orelse continue;
+        const cave = world.findPersonById(world_state.people.items, connection.cave_person_id) orelse continue;
+        if (stick.place != selected_place or cave.place != selected_place) continue;
+        if (cave.kind == .male) continue;
+        count += 1;
+    }
+    return count;
+}
+
+fn peopleContentHeightFiltered(world_state: *const world.World, selected_place: world.Place, gender_mask: u8, race_mask: u16) i32 {
+    return @as(i32, @intCast(peopleCountInPlaceFiltered(world_state, selected_place, gender_mask, race_mask))) * 36;
+}
+
+fn connectionContentHeight(world_state: *const world.World, selected_place: world.Place) i32 {
+    return @as(i32, @intCast(connectionGroupCountInPlace(world_state, selected_place))) * 36;
+}
+
+fn clampPlaceViewScroll(ui: *UiState, world_state: *const world.World, selected_place: world.Place, client_rect: win.RECT) void {
+    const layout = layoutPlaceView(client_rect, ui.*);
+
+    if (layout.people_panel_rect) |panel| {
+        ui.people_scroll = clampI32(ui.people_scroll, 0, scrollMax(listViewportHeight(panel), peopleContentHeightFiltered(world_state, selected_place, ui.selected_gender_mask, ui.selected_race_mask)));
+    } else {
+        ui.people_scroll = 0;
+    }
+
+    if (layout.connections_panel_rect) |panel| {
+        ui.connections_scroll = clampI32(ui.connections_scroll, 0, scrollMax(listViewportHeight(panel), connectionContentHeight(world_state, selected_place)));
+    } else {
+        ui.connections_scroll = 0;
+    }
+}
+
+fn makeSquareRect(x: i32, y: i32, max_w: i32, max_h: i32, min_side: i32) Rect {
+    const side = @max(min_side, @min(max_w, max_h));
+    return .{ .x = x, .y = y, .w = side, .h = side };
+}
+
+fn layoutPlaceView(client_rect: win.RECT, ui: UiState) PlaceViewLayout {
+    const content_top = 165;
+    const bottom_margin = 24;
+    const panel_bottom = client_rect.bottom - bottom_margin;
+    const total_h = @max(220, panel_bottom - content_top);
+    const left_w = 570;
+    const right_x = 620;
+    const right_w = @max(360, client_rect.right - right_x - 30);
+
+    const people_toggle_rect = Rect{ .x = 130, .y = 118, .w = 150, .h = 32 };
+    const filter_button_rect = Rect{ .x = 295, .y = 118, .w = 120, .h = 32 };
+    const connections_toggle_rect = Rect{ .x = 480, .y = 118, .w = 190, .h = 32 };
+
+    var people_panel_rect: ?Rect = null;
+    var connections_panel_rect: ?Rect = null;
+    var map_label_pos = I32Point{ .x = 20, .y = content_top };
+    var map_rect = Rect{ .x = 20, .y = content_top + 26, .w = 320, .h = 320 };
+    var legend_pos = I32Point{ .x = 20, .y = content_top + 360 };
+
+    if (ui.show_people_list and ui.show_connections_list) {
+        people_panel_rect = Rect{ .x = 20, .y = content_top, .w = left_w, .h = total_h };
+        const connections_h = @max(170, @min(230, total_h / 2));
+        connections_panel_rect = Rect{ .x = right_x, .y = content_top, .w = right_w, .h = connections_h };
+
+        map_label_pos = I32Point{ .x = right_x, .y = connections_panel_rect.?.y + connections_panel_rect.?.h + 18 };
+        map_rect = makeSquareRect(right_x, map_label_pos.y + 26, right_w, panel_bottom - (map_label_pos.y + 26), 220);
+        legend_pos = I32Point{ .x = map_rect.x + map_rect.w + 15, .y = map_rect.y + 10 };
+        if (legend_pos.x + 120 > client_rect.right - 10) {
+            legend_pos = I32Point{ .x = map_rect.x, .y = map_rect.y + map_rect.h + 10 };
+        }
+    } else if (ui.show_people_list) {
+        people_panel_rect = Rect{ .x = 20, .y = content_top, .w = left_w, .h = total_h };
+        map_label_pos = I32Point{ .x = right_x, .y = content_top };
+        map_rect = makeSquareRect(right_x, content_top + 26, right_w, panel_bottom - (content_top + 26), 240);
+        legend_pos = I32Point{ .x = map_rect.x + map_rect.w + 15, .y = map_rect.y + 10 };
+        if (legend_pos.x + 120 > client_rect.right - 10) {
+            legend_pos = I32Point{ .x = map_rect.x, .y = map_rect.y + map_rect.h + 10 };
+        }
+    } else if (ui.show_connections_list) {
+        connections_panel_rect = Rect{ .x = right_x, .y = content_top, .w = right_w, .h = total_h };
+        map_label_pos = I32Point{ .x = 20, .y = content_top };
+        map_rect = makeSquareRect(20, content_top + 26, left_w, panel_bottom - (content_top + 26), 260);
+        legend_pos = I32Point{ .x = map_rect.x + map_rect.w + 15, .y = map_rect.y + 10 };
+        if (legend_pos.x + 120 > right_x - 10) {
+            legend_pos = I32Point{ .x = map_rect.x, .y = map_rect.y + map_rect.h + 10 };
+        }
+    } else {
+        const map_area_x = 20;
+        const map_area_w = client_rect.right - 40;
+        map_label_pos = I32Point{ .x = map_area_x, .y = content_top };
+        map_rect = makeSquareRect(map_area_x, content_top + 26, map_area_w, panel_bottom - (content_top + 26), 300);
+        legend_pos = I32Point{ .x = map_rect.x + map_rect.w + 15, .y = map_rect.y + 10 };
+        if (legend_pos.x + 120 > client_rect.right - 10) {
+            legend_pos = I32Point{ .x = map_rect.x, .y = map_rect.y + map_rect.h + 10 };
+        }
+    }
+
+    return .{
+        .people_toggle_rect = people_toggle_rect,
+        .connections_toggle_rect = connections_toggle_rect,
+        .filter_button_rect = filter_button_rect,
+        .people_panel_rect = people_panel_rect,
+        .connections_panel_rect = connections_panel_rect,
+        .map_label_pos = map_label_pos,
+        .map_rect = map_rect,
+        .legend_pos = legend_pos,
+    };
+}
+
+fn drawPeoplePanel(
+    hdc: win.HDC,
+    panel: Rect,
+    world_state: *const world.World,
+    selected_place: world.Place,
+    gender_mask: u8,
+    race_mask: u16,
+    scroll_offset: i32,
+    mouse_x: i32,
+    mouse_y: i32,
+    hovered_person: *?world.Person,
+    hovered_person_tooltip_style: *TooltipStyle,
+    theme: Theme,
+) !void {
+    drawFrame(hdc, panel, theme.panel, theme.border);
+    drawTextColored(hdc, panel.x + 10, panel.y + 8, "People in place:", theme.text);
+
+    var gender_summary_buf: [64]u8 = undefined;
+    const gender_summary = try genderSelectionSummary(&gender_summary_buf, gender_mask);
+    var race_summary_buf: [96]u8 = undefined;
+    const race_summary = try raceSelectionSummary(&race_summary_buf, race_mask);
+    var filter_summary_buf: [192]u8 = undefined;
+    const filter_summary = try std.fmt.bufPrint(&filter_summary_buf, "Filters: {s} | {s}", .{ gender_summary, race_summary });
+    drawTextColored(hdc, panel.x + panel.w - 250, panel.y + 8, filter_summary, theme.text);
+
+    const viewport_y = panel.y + 34;
+    const viewport_bottom = panel.y + panel.h;
+    var item_y = viewport_y - scroll_offset;
+
+    for (world_state.people.items) |person| {
+        if (person.place != selected_place) continue;
+        if (!personMatchesFilters(person, gender_mask, race_mask)) continue;
+
+        const item_rect = Rect{ .x = panel.x + 4, .y = item_y - 2, .w = panel.w - 8, .h = 34 };
+        const visible = item_rect.y + item_rect.h > viewport_y and item_rect.y < viewport_bottom;
+        const hovered = visible and item_rect.contains(mouse_x, mouse_y);
+        if (hovered) {
+            hovered_person.* = person;
+            hovered_person_tooltip_style.* = .solid;
+            fillRectColor(hdc, item_rect, theme.button_hover);
+        }
+
+        if (visible) {
+            var person_buf: [256]u8 = undefined;
+            const person_line = try std.fmt.bufPrint(&person_buf, "#{d} {s} {s}, age {d}, {d}cm, {s}, {s} hair", .{
+                person.id,
+                person.first_name,
+                person.last_name,
+                person.age,
+                person.height_cm,
+                person.race.asString(),
+                person.hair_color_kind.asString(),
+            });
+            drawTextColored(hdc, panel.x + 10, item_y, person_line, theme.text);
+
+            var person_meta_buf: [220]u8 = undefined;
+            const person_meta_line = try std.fmt.bufPrint(&person_meta_buf, "    {s}  {s} {s}", .{
+                person.kind.asString(),
+                person.hair_length.asString(),
+                person.hair_style.asString(),
+            });
+            drawTextColored(hdc, panel.x + 10, item_y + 18, person_meta_line, theme.text);
+        }
+
+        item_y += 36;
+    }
+}
+
+fn personMatchesFilters(person: world.Person, gender_mask: u8, race_mask: u16) bool {
+    return genderSelected(gender_mask, person.kind) and raceSelected(race_mask, person.race);
+}
+
+fn genderSelectionSummary(buf: []u8, mask: u8) ![]const u8 {
+    const count = selectedGenderCount(mask);
+    if (count == 0) return std.fmt.bufPrint(buf, "no genders", .{});
+    if (mask == allGenderMask()) return std.fmt.bufPrint(buf, "all genders", .{});
+    if (count == 1) {
+        for (person_type_options) |kind| {
+            if (genderSelected(mask, kind)) return std.fmt.bufPrint(buf, "{s}", .{kind.asString()});
+        }
+    }
+    return std.fmt.bufPrint(buf, "{d} genders", .{count});
+}
+
+fn raceSelectionSummary(buf: []u8, mask: u16) ![]const u8 {
+    const count = selectedRaceCount(mask);
+    if (count == 0) return std.fmt.bufPrint(buf, "no races", .{});
+    if (mask == allRaceMask()) return std.fmt.bufPrint(buf, "all races", .{});
+    if (count == 1) {
+        for (race_options) |race| {
+            if (raceSelected(mask, race)) return std.fmt.bufPrint(buf, "{s}", .{race.asString()});
+        }
+    }
+    return std.fmt.bufPrint(buf, "{d} races", .{count});
+}
+
+fn layoutFilterModal(client_rect: win.RECT) FilterModalLayout {
+    const modal_w = 560;
+    const modal_h = 340;
+    const modal_x = @max(20, @divTrunc(client_rect.right - modal_w, 2));
+    const modal_y = @max(90, @divTrunc(client_rect.bottom - modal_h, 2));
+    const modal_rect = Rect{ .x = modal_x, .y = modal_y, .w = modal_w, .h = modal_h };
+    const close_button_rect = Rect{ .x = modal_rect.x + modal_rect.w - 42, .y = modal_rect.y + 12, .w = 24, .h = 24 };
+    const gender_button_rect = Rect{ .x = modal_rect.x + 20, .y = modal_rect.y + 60, .w = 240, .h = 32 };
+    const race_button_rect = Rect{ .x = modal_rect.x + 280, .y = modal_rect.y + 60, .w = 260, .h = 32 };
+    const gender_dropdown_rect = Rect{ .x = gender_button_rect.x, .y = gender_button_rect.y + 38, .w = gender_button_rect.w, .h = 86 };
+    const race_dropdown_rect = Rect{ .x = race_button_rect.x, .y = race_button_rect.y + 38, .w = race_button_rect.w, .h = 236 };
+
+    return .{
+        .modal_rect = modal_rect,
+        .close_button_rect = close_button_rect,
+        .gender_button_rect = gender_button_rect,
+        .race_button_rect = race_button_rect,
+        .gender_dropdown_rect = gender_dropdown_rect,
+        .race_dropdown_rect = race_dropdown_rect,
+    };
+}
+
+fn handleFilterModalClick(ui: *UiState, world_state: *const world.World, client_rect: win.RECT, click: ClickPos) void {
+    const layout = layoutFilterModal(client_rect);
+    if (!layout.modal_rect.contains(click.x, click.y)) {
+        ui.filter_modal_open = false;
+        ui.gender_dropdown_open = false;
+        ui.race_dropdown_open = false;
+        return;
+    }
+
+    if (layout.gender_button_rect.contains(click.x, click.y)) {
+        ui.gender_dropdown_open = !ui.gender_dropdown_open;
+        return;
+    }
+
+    if (layout.close_button_rect.contains(click.x, click.y)) {
+        ui.filter_modal_open = false;
+        ui.gender_dropdown_open = false;
+        ui.race_dropdown_open = false;
+        return;
+    }
+
+    if (layout.race_button_rect.contains(click.x, click.y)) {
+        ui.race_dropdown_open = !ui.race_dropdown_open;
+        return;
+    }
+
+    if (ui.gender_dropdown_open) {
+        var option_y = layout.gender_dropdown_rect.y + 6;
+        for (person_type_options) |kind| {
+            const option_rect = Rect{ .x = layout.gender_dropdown_rect.x + 6, .y = option_y, .w = layout.gender_dropdown_rect.w - 12, .h = 22 };
+            if (option_rect.contains(click.x, click.y)) {
+                toggleGenderSelection(&ui.selected_gender_mask, kind);
+                ui.people_scroll = 0;
+                _ = world_state;
+                return;
+            }
+            option_y += 24;
+        }
+    }
+
+    if (ui.race_dropdown_open) {
+        var option_y = layout.race_dropdown_rect.y + 6;
+        for (race_options) |race| {
+            const option_rect = Rect{ .x = layout.race_dropdown_rect.x + 6, .y = option_y, .w = layout.race_dropdown_rect.w - 12, .h = 22 };
+            if (option_rect.contains(click.x, click.y)) {
+                toggleRaceSelection(&ui.selected_race_mask, race);
+                ui.people_scroll = 0;
+                _ = world_state;
+                return;
+            }
+            option_y += 24;
+        }
+    }
+}
+
+fn drawFilterModal(hdc: win.HDC, client_rect: win.RECT, ui: UiState, mouse_x: i32, mouse_y: i32, theme: Theme) !void {
+    const overlay_rect = Rect{ .x = 0, .y = 0, .w = client_rect.right, .h = client_rect.bottom };
+    drawFrameBlended(hdc, overlay_rect, theme.background, 0.4, theme.background);
+
+    const layout = layoutFilterModal(client_rect);
+    drawFrame(hdc, layout.modal_rect, theme.panel, theme.border);
+    drawTextColored(hdc, layout.modal_rect.x + 20, layout.modal_rect.y + 18, "People List Filters", theme.text);
+    drawCloseButton(hdc, layout.close_button_rect, layout.close_button_rect.contains(mouse_x, mouse_y));
+
+    var gender_summary_buf: [64]u8 = undefined;
+    const gender_summary = try genderSelectionSummary(&gender_summary_buf, ui.selected_gender_mask);
+    var race_summary_buf: [96]u8 = undefined;
+    const race_summary = try raceSelectionSummary(&race_summary_buf, ui.selected_race_mask);
+
+    drawButton(
+        hdc,
+        layout.gender_button_rect,
+        gender_summary,
+        layout.gender_button_rect.contains(mouse_x, mouse_y),
+        theme,
+    );
+    drawButton(
+        hdc,
+        layout.race_button_rect,
+        race_summary,
+        layout.race_button_rect.contains(mouse_x, mouse_y),
+        theme,
+    );
+    drawTextColored(hdc, layout.gender_button_rect.x, layout.gender_button_rect.y - 20, "Gender", theme.text);
+    drawTextColored(hdc, layout.race_button_rect.x, layout.race_button_rect.y - 20, "Race", theme.text);
+
+    if (ui.gender_dropdown_open) {
+        drawMultiSelectDropdown(hdc, layout.gender_dropdown_rect, mouse_x, mouse_y, theme);
+        var option_y = layout.gender_dropdown_rect.y + 6;
+        for (person_type_options) |kind| {
+            const option_rect = Rect{ .x = layout.gender_dropdown_rect.x + 6, .y = option_y, .w = layout.gender_dropdown_rect.w - 12, .h = 22 };
+            if (option_rect.contains(mouse_x, mouse_y)) fillRectColor(hdc, option_rect, theme.button_hover);
+
+            var label_buf: [64]u8 = undefined;
+            const label = try std.fmt.bufPrint(&label_buf, "[{s}] {s}", .{
+                if (genderSelected(ui.selected_gender_mask, kind)) "x" else " ",
+                kind.asString(),
+            });
+            drawTextColored(hdc, option_rect.x + 4, option_rect.y + 4, label, theme.text);
+            option_y += 24;
+        }
+    }
+
+    if (ui.race_dropdown_open) {
+        drawMultiSelectDropdown(hdc, layout.race_dropdown_rect, mouse_x, mouse_y, theme);
+        var option_y = layout.race_dropdown_rect.y + 6;
+        for (race_options) |race| {
+            const option_rect = Rect{ .x = layout.race_dropdown_rect.x + 6, .y = option_y, .w = layout.race_dropdown_rect.w - 12, .h = 22 };
+            if (option_rect.contains(mouse_x, mouse_y)) fillRectColor(hdc, option_rect, theme.button_hover);
+
+            var label_buf: [96]u8 = undefined;
+            const label = try std.fmt.bufPrint(&label_buf, "[{s}] {s}", .{
+                if (raceSelected(ui.selected_race_mask, race)) "x" else " ",
+                race.asString(),
+            });
+            drawTextColored(hdc, option_rect.x + 4, option_rect.y + 4, label, theme.text);
+            option_y += 24;
+        }
+    }
+}
+
+fn drawMultiSelectDropdown(hdc: win.HDC, rect: Rect, mouse_x: i32, mouse_y: i32, theme: Theme) void {
+    _ = mouse_x;
+    _ = mouse_y;
+    drawFrame(hdc, rect, theme.button, theme.border);
+}
+
+fn drawCloseButton(hdc: win.HDC, rect: Rect, hovered: bool) void {
+    const fill = if (hovered) rgb(216, 68, 68) else rgb(194, 54, 54);
+    drawFrame(hdc, rect, fill, rgb(142, 30, 30));
+    drawTextColored(hdc, rect.x + 7, rect.y + 4, "X", rgb(255, 255, 255));
+}
+
+fn drawConnectionsPanel(
+    hdc: win.HDC,
+    panel: Rect,
+    world_state: *const world.World,
+    selected_place: world.Place,
+    scroll_offset: i32,
+    mouse_x: i32,
+    mouse_y: i32,
+    hovered_connection_group: *?ConnectionGroup,
+    theme: Theme,
+) !void {
+    drawFrame(hdc, panel, theme.panel, theme.border);
+    drawTextColored(hdc, panel.x + 10, panel.y + 8, "Current connections:", theme.text);
+
+    const viewport_y = panel.y + 34;
+    const viewport_bottom = panel.y + panel.h;
+    var item_y = viewport_y - scroll_offset;
+
     for (world_state.connections.items, 0..) |connection, connection_index| {
         if (!isConnectionGroupFirstOccurrence(world_state.connections.items, connection_index)) continue;
 
@@ -281,40 +886,29 @@ fn drawPlaceView(
         if (stick.place != selected_place or cave.place != selected_place) continue;
         if (cave.kind == .male) continue;
 
+        const item_rect = Rect{ .x = panel.x + 4, .y = item_y - 2, .w = panel.w - 8, .h = 34 };
+        const visible = item_rect.y + item_rect.h > viewport_y and item_rect.y < viewport_bottom;
         const group = ConnectionGroup{ .cave_person_id = connection.cave_person_id };
-        const connection_rect = Rect{ .x = 624, .y = y_conn - 2, .w = 520, .h = 34 };
-        const is_hovered = connection_rect.contains(mouse_x, mouse_y);
-        if (is_hovered) {
-            hovered_connection_group = group;
-            fillRectColor(hdc, connection_rect, theme.button_hover);
+        const hovered = visible and item_rect.contains(mouse_x, mouse_y);
+        if (hovered) {
+            hovered_connection_group.* = group;
+            fillRectColor(hdc, item_rect, theme.button_hover);
         }
 
-        var conn_buf: [256]u8 = undefined;
-        const conn_line = try std.fmt.bufPrint(&conn_buf, "{s} {s} ({s}) | connections {d}", .{
-            cave.first_name,
-            cave.last_name,
-            cave.kind.asString(),
-            countConnectionGroup(group, world_state.connections.items),
-        });
-        drawTextColored(hdc, 630, y_conn, conn_line, theme.text);
-        drawMoodTriplet(hdc, 910, y_conn, cave.moods, theme);
-        drawCaveSpecialMoodBars(hdc, 910, y_conn + 16, cave.moods, theme);
-        y_conn += 36;
-    }
+        if (visible) {
+            var conn_buf: [256]u8 = undefined;
+            const conn_line = try std.fmt.bufPrint(&conn_buf, "{s} {s} ({s}) | connections {d}", .{
+                cave.first_name,
+                cave.last_name,
+                cave.kind.asString(),
+                countConnectionGroup(group, world_state.connections.items),
+            });
+            drawTextColored(hdc, panel.x + 10, item_y, conn_line, theme.text);
+            drawMoodTriplet(hdc, panel.x + 290, item_y, cave.moods, theme);
+            drawCaveSpecialMoodBars(hdc, panel.x + 290, item_y + 16, cave.moods, theme);
+        }
 
-    const map_label_y = @max(360, y_conn + 20);
-    drawTextColored(hdc, 620, map_label_y, "Room map (100x100 units):", theme.text);
-    const map_rect = Rect{ .x = 620, .y = map_label_y + 26, .w = 420, .h = 420 };
-    drawPlaceMap(hdc, map_rect, world_state, selected_place, mouse_x, mouse_y, &hovered_person, &hovered_person_tooltip_style, theme);
-    drawTextColored(hdc, 1055, map_rect.y + 10, "Red: unconnected", theme.text);
-    drawTextColored(hdc, 1055, map_rect.y + 30, "Green: connected", theme.text);
-
-    if (hovered_person) |person| {
-        try drawPersonTooltip(hdc, client_rect, mouse_x, mouse_y, person, world_state.people.items, world_state.connections.items, hovered_person_tooltip_style, theme);
-    }
-
-    if (hovered_connection_group) |group| {
-        try drawConnectionGroupTooltip(hdc, client_rect, mouse_x, mouse_y, group, world_state.people.items, world_state.connections.items, .solid, theme);
+        item_y += 36;
     }
 }
 
@@ -347,22 +941,22 @@ fn colorRefFromWorld(color: world.Color) win.COLORREF {
 fn currentTheme(dark_mode: bool) Theme {
     if (dark_mode) {
         return .{
-            .background = rgb(24, 28, 35),
-            .button = rgb(58, 66, 78),
-            .button_hover = rgb(82, 92, 108),
-            .panel = rgb(36, 46, 60),
-            .text = rgb(235, 239, 244),
-            .border = rgb(112, 122, 138),
+            .background = rgb(18, 23, 31),
+            .button = rgb(50, 62, 77),
+            .button_hover = rgb(68, 84, 102),
+            .panel = rgb(29, 39, 53),
+            .text = rgb(236, 241, 247),
+            .border = rgb(98, 114, 133),
         };
     }
 
     return .{
-        .background = rgb(255, 255, 255),
-        .button = rgb(230, 230, 230),
-        .button_hover = rgb(204, 204, 204),
-        .panel = rgb(173, 216, 230),
-        .text = rgb(0, 0, 0),
-        .border = rgb(0, 0, 0),
+        .background = rgb(243, 247, 250),
+        .button = rgb(232, 239, 245),
+        .button_hover = rgb(216, 227, 237),
+        .panel = rgb(250, 252, 255),
+        .text = rgb(25, 34, 44),
+        .border = rgb(162, 177, 192),
     };
 }
 
@@ -382,6 +976,22 @@ fn fillRectColor(hdc: win.HDC, rect: Rect, color: win.COLORREF) void {
     _ = win.FillRect(hdc, &win_rect, brush);
 }
 
+fn fillRoundedRect(hdc: win.HDC, rect: Rect, color: win.COLORREF, radius: i32) void {
+    const brush = win.CreateSolidBrush(color) orelse return;
+    defer _ = win.DeleteObject(@ptrCast(brush));
+
+    const pen = win.CreatePen(win.PS_SOLID, 1, color) orelse return;
+    defer _ = win.DeleteObject(@ptrCast(pen));
+
+    const previous_brush = win.SelectObject(hdc, @ptrCast(brush)) orelse return;
+    defer _ = win.SelectObject(hdc, previous_brush);
+
+    const previous_pen = win.SelectObject(hdc, @ptrCast(pen)) orelse return;
+    defer _ = win.SelectObject(hdc, previous_pen);
+
+    _ = win.RoundRect(hdc, rect.x, rect.y, rect.x + rect.w, rect.y + rect.h, radius, radius);
+}
+
 fn drawText(hdc: win.HDC, x: i32, y: i32, text: []const u8) void {
     _ = win.TextOutA(hdc, x, y, text.ptr, @as(i32, @intCast(text.len)));
 }
@@ -393,12 +1003,22 @@ fn drawTextColored(hdc: win.HDC, x: i32, y: i32, text: []const u8, color: win.CO
 }
 
 fn drawFrame(hdc: win.HDC, rect: Rect, fill: win.COLORREF, border: win.COLORREF) void {
-    fillRectColor(hdc, rect, fill);
+    const shadow_rect = Rect{ .x = rect.x, .y = rect.y + 2, .w = rect.w, .h = rect.h };
+    fillRoundedRect(hdc, shadow_rect, blendColor(border, fill, 0.16), 12);
 
-    const border_brush = win.CreateSolidBrush(border) orelse return;
-    defer _ = win.DeleteObject(@ptrCast(border_brush));
-    var border_rect = toWinRect(rect);
-    _ = win.FrameRect(hdc, &border_rect, border_brush);
+    const brush = win.CreateSolidBrush(fill) orelse return;
+    defer _ = win.DeleteObject(@ptrCast(brush));
+
+    const pen = win.CreatePen(win.PS_SOLID, 1, border) orelse return;
+    defer _ = win.DeleteObject(@ptrCast(pen));
+
+    const previous_brush = win.SelectObject(hdc, @ptrCast(brush)) orelse return;
+    defer _ = win.SelectObject(hdc, previous_brush);
+
+    const previous_pen = win.SelectObject(hdc, @ptrCast(pen)) orelse return;
+    defer _ = win.SelectObject(hdc, previous_pen);
+
+    _ = win.RoundRect(hdc, rect.x, rect.y, rect.x + rect.w, rect.y + rect.h, 12, 12);
 }
 
 fn drawFrameBlended(hdc: win.HDC, rect: Rect, fill: win.COLORREF, alpha: f32, border: win.COLORREF) void {
@@ -428,8 +1048,9 @@ fn drawFrameBlended(hdc: win.HDC, rect: Rect, fill: win.COLORREF, alpha: f32, bo
 }
 
 fn drawButton(hdc: win.HDC, rect: Rect, label: []const u8, hovered: bool, theme: Theme) void {
-    drawFrame(hdc, rect, if (hovered) theme.button_hover else theme.button, theme.border);
-    drawTextColored(hdc, rect.x + 10, rect.y + 10, label, theme.text);
+    const fill = if (hovered) theme.button_hover else theme.button;
+    drawFrame(hdc, rect, fill, blendColor(theme.border, fill, 0.72));
+    drawTextColored(hdc, rect.x + 12, rect.y + 10, label, theme.text);
 }
 
 fn drawFilledCircle(hdc: win.HDC, center_x: i32, center_y: i32, radius: i32, color: win.COLORREF) void {
