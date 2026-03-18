@@ -28,6 +28,12 @@ pub const win = struct {
     pub const ATOM = windows.ATOM;
     pub const HGDIOBJ = *opaque {};
     pub const WNDPROC = *const fn (?HWND, UINT, WPARAM, LPARAM) callconv(.winapi) LRESULT;
+    pub const BLENDFUNCTION = extern struct {
+        BlendOp: u8,
+        BlendFlags: u8,
+        SourceConstantAlpha: u8,
+        AlphaFormat: u8,
+    };
 
     pub const WNDCLASSA = extern struct {
         style: u32,
@@ -67,6 +73,7 @@ pub const win = struct {
     pub const TRANSPARENT: i32 = 1;
     pub const IDC_ARROW: [*:0]const u8 = @ptrFromInt(32512);
     pub const PS_SOLID: i32 = 0;
+    pub const AC_SRC_OVER: u8 = 0x00;
 
     pub extern "kernel32" fn GetModuleHandleA(lpModuleName: ?[*:0]const u8) callconv(.winapi) ?HINSTANCE;
     pub extern "user32" fn RegisterClassA(lpWndClass: *const WNDCLASSA) callconv(.winapi) ATOM;
@@ -110,4 +117,17 @@ pub const win = struct {
     pub extern "gdi32" fn TextOutA(hdc: HDC, x: i32, y: i32, text: [*]const u8, len: i32) callconv(.winapi) BOOL;
     pub extern "gdi32" fn BitBlt(hdc: HDC, x: i32, y: i32, cx: i32, cy: i32, hdc_src: HDC, x1: i32, y1: i32, rop: u32) callconv(.winapi) BOOL;
     pub extern "gdi32" fn Ellipse(hdc: HDC, left: i32, top: i32, right: i32, bottom: i32) callconv(.winapi) BOOL;
+    pub extern "msimg32" fn AlphaBlend(
+        hdcDest: HDC,
+        xoriginDest: i32,
+        yoriginDest: i32,
+        wDest: i32,
+        hDest: i32,
+        hdcSrc: HDC,
+        xoriginSrc: i32,
+        yoriginSrc: i32,
+        wSrc: i32,
+        hSrc: i32,
+        ftn: BLENDFUNCTION,
+    ) callconv(.winapi) BOOL;
 };

@@ -7,6 +7,11 @@ const ConnectionGroup = struct {
     cave_person_id: usize,
 };
 
+const TooltipStyle = enum {
+    solid,
+    translucent,
+};
+
 const ClickPos = struct {
     x: i32,
     y: i32,
@@ -234,10 +239,14 @@ fn drawPlaceView(
     drawTextColored(hdc, 20, 130, "People in place:", theme.text);
     var y_people: i32 = 155;
     var hovered_person: ?world.Person = null;
+    var hovered_person_tooltip_style: TooltipStyle = .solid;
     for (world_state.people.items) |person| {
         if (person.place != selected_place) continue;
         const person_rect = Rect{ .x = 24, .y = y_people - 2, .w = 560, .h = 18 };
-        if (person_rect.contains(mouse_x, mouse_y)) hovered_person = person;
+        if (person_rect.contains(mouse_x, mouse_y)) {
+            hovered_person = person;
+            hovered_person_tooltip_style = .solid;
+        }
         var person_buf: [220]u8 = undefined;
         const person_line = try std.fmt.bufPrint(&person_buf, "#{d} {s} {s}, age {d} ({s})", .{ person.id, person.first_name, person.last_name, person.age, person.kind.asString() });
         drawTextColored(hdc, 30, y_people, person_line, theme.text);
@@ -279,21 +288,39 @@ fn drawPlaceView(
     const map_label_y = @max(360, y_conn + 20);
     drawTextColored(hdc, 620, map_label_y, "Room map (100x100 units):", theme.text);
     const map_rect = Rect{ .x = 620, .y = map_label_y + 26, .w = 420, .h = 420 };
-    drawPlaceMap(hdc, map_rect, world_state, selected_place, mouse_x, mouse_y, &hovered_person, theme);
+    drawPlaceMap(hdc, map_rect, world_state, selected_place, mouse_x, mouse_y, &hovered_person, &hovered_person_tooltip_style, theme);
     drawTextColored(hdc, 1055, map_rect.y + 10, "Red: unconnected", theme.text);
     drawTextColored(hdc, 1055, map_rect.y + 30, "Green: connected", theme.text);
 
     if (hovered_person) |person| {
-        try drawPersonTooltip(hdc, client_rect, mouse_x, mouse_y, person, world_state.people.items, world_state.connections.items, theme);
+        try drawPersonTooltip(hdc, client_rect, mouse_x, mouse_y, person, world_state.people.items, world_state.connections.items, hovered_person_tooltip_style, theme);
     }
 
     if (hovered_connection_group) |group| {
-        try drawConnectionGroupTooltip(hdc, client_rect, mouse_x, mouse_y, group, world_state.people.items, world_state.connections.items, theme);
+        try drawConnectionGroupTooltip(hdc, client_rect, mouse_x, mouse_y, group, world_state.people.items, world_state.connections.items, .solid, theme);
     }
 }
 
 fn rgb(r: u8, g: u8, b: u8) win.COLORREF {
     return @as(win.COLORREF, r) | (@as(win.COLORREF, g) << 8) | (@as(win.COLORREF, b) << 16);
+}
+
+fn colorChannel(color: win.COLORREF, shift: u5) u8 {
+    return @as(u8, @intCast((color >> shift) & 0xff));
+}
+
+fn blendColor(foreground: win.COLORREF, background: win.COLORREF, alpha: f32) win.COLORREF {
+    const clamped_alpha = @max(0.0, @min(alpha, 1.0));
+    const inv_alpha = 1.0 - clamped_alpha;
+
+    const r = @as(u8, @intFromFloat((@as(f32, @floatFromInt(colorChannel(foreground, 0))) * clamped_alpha) +
+        (@as(f32, @floatFromInt(colorChannel(background, 0))) * inv_alpha)));
+    const g = @as(u8, @intFromFloat((@as(f32, @floatFromInt(colorChannel(foreground, 8))) * clamped_alpha) +
+        (@as(f32, @floatFromInt(colorChannel(background, 8))) * inv_alpha)));
+    const b = @as(u8, @intFromFloat((@as(f32, @floatFromInt(colorChannel(foreground, 16))) * clamped_alpha) +
+        (@as(f32, @floatFromInt(colorChannel(background, 16))) * inv_alpha)));
+
+    return rgb(r, g, b);
 }
 
 fn currentTheme(dark_mode: bool) Theme {
@@ -346,6 +373,32 @@ fn drawTextColored(hdc: win.HDC, x: i32, y: i32, text: []const u8, color: win.CO
 
 fn drawFrame(hdc: win.HDC, rect: Rect, fill: win.COLORREF, border: win.COLORREF) void {
     fillRectColor(hdc, rect, fill);
+
+    const border_brush = win.CreateSolidBrush(border) orelse return;
+    defer _ = win.DeleteObject(@ptrCast(border_brush));
+    var border_rect = toWinRect(rect);
+    _ = win.FrameRect(hdc, &border_rect, border_brush);
+}
+
+fn drawFrameBlended(hdc: win.HDC, rect: Rect, fill: win.COLORREF, alpha: f32, border: win.COLORREF) void {
+    const overlay_dc = win.CreateCompatibleDC(hdc) orelse return;
+    defer _ = win.DeleteDC(overlay_dc);
+
+    const overlay_bitmap = win.CreateCompatibleBitmap(hdc, rect.w, rect.h) orelse return;
+    defer _ = win.DeleteObject(@ptrCast(overlay_bitmap));
+
+    const previous_bitmap = win.SelectObject(overlay_dc, @ptrCast(overlay_bitmap)) orelse return;
+    defer _ = win.SelectObject(overlay_dc, previous_bitmap);
+
+    fillRectColor(overlay_dc, .{ .x = 0, .y = 0, .w = rect.w, .h = rect.h }, fill);
+
+    const blend = win.BLENDFUNCTION{
+        .BlendOp = win.AC_SRC_OVER,
+        .BlendFlags = 0,
+        .SourceConstantAlpha = @as(u8, @intFromFloat(@max(0.0, @min(alpha, 1.0)) * 255.0)),
+        .AlphaFormat = 0,
+    };
+    _ = win.AlphaBlend(hdc, rect.x, rect.y, rect.w, rect.h, overlay_dc, 0, 0, rect.w, rect.h, blend);
 
     const border_brush = win.CreateSolidBrush(border) orelse return;
     defer _ = win.DeleteObject(@ptrCast(border_brush));
@@ -428,6 +481,7 @@ fn drawPlaceMap(
     mouse_x: i32,
     mouse_y: i32,
     hovered_person: *?world.Person,
+    hovered_person_tooltip_style: *TooltipStyle,
     theme: Theme,
 ) void {
     drawFrame(hdc, map_rect, theme.panel, theme.border);
@@ -440,15 +494,18 @@ fn drawPlaceMap(
             mouse_y >= mapped.y - mapped.radius and mouse_y <= mapped.y + mapped.radius)
         {
             hovered_person.* = person;
+            hovered_person_tooltip_style.* = .translucent;
         }
 
         const is_connected = world.personConnectionCount(person.id, world_state.connections.items) > 0;
+        const base_color = if (is_connected) rgb(52, 188, 92) else rgb(214, 54, 54);
+        const is_hovered = hovered_person.* != null and hovered_person.*.?.id == person.id;
         drawFilledCircle(
             hdc,
             mapped.x,
             mapped.y,
             mapped.radius,
-            if (is_connected) rgb(52, 188, 92) else rgb(214, 54, 54),
+            if (is_hovered) blendColor(base_color, theme.panel, 0.5) else base_color,
         );
     }
 }
@@ -578,6 +635,7 @@ fn drawConnectionGroupTooltip(
     group: ConnectionGroup,
     people: []const world.Person,
     connections: []const world.Connection,
+    style: TooltipStyle,
     theme: Theme,
 ) !void {
     const cave = world.findPersonById(people, group.cave_person_id) orelse return;
@@ -592,7 +650,10 @@ fn drawConnectionGroupTooltip(
     const tooltip_y = clampI32(mouse_y + 18, 10, client_rect.bottom - tooltip_h - 10);
     const tooltip_rect = Rect{ .x = tooltip_x, .y = tooltip_y, .w = tooltip_w, .h = tooltip_h };
 
-    drawFrame(hdc, tooltip_rect, theme.panel, theme.border);
+    switch (style) {
+        .solid => drawFrame(hdc, tooltip_rect, theme.panel, theme.border),
+        .translucent => drawFrameBlended(hdc, tooltip_rect, theme.panel, 0.5, theme.border),
+    }
 
     var y = tooltip_rect.y + padding;
 
@@ -666,6 +727,7 @@ fn drawPersonTooltip(
     person: world.Person,
     people: []const world.Person,
     connections: []const world.Connection,
+    style: TooltipStyle,
     theme: Theme,
 ) !void {
     const tooltip_w: i32 = 540;
@@ -675,7 +737,10 @@ fn drawPersonTooltip(
     const tooltip_y = clampI32(mouse_y + 18, 10, client_rect.bottom - tooltip_h - 10);
     const tooltip_rect = Rect{ .x = tooltip_x, .y = tooltip_y, .w = tooltip_w, .h = tooltip_h };
 
-    drawFrame(hdc, tooltip_rect, theme.panel, theme.border);
+    switch (style) {
+        .solid => drawFrame(hdc, tooltip_rect, theme.panel, theme.border),
+        .translucent => drawFrameBlended(hdc, tooltip_rect, theme.panel, 0.5, theme.border),
+    }
 
     var y = tooltip_rect.y + 10;
 
