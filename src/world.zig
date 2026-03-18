@@ -639,6 +639,13 @@ pub fn findPersonById(people: []const Person, person_id: usize) ?Person {
     return null;
 }
 
+pub fn findPersonPtrById(people: []Person, person_id: usize) ?*Person {
+    for (people) |*person| {
+        if (person.id == person_id) return person;
+    }
+    return null;
+}
+
 pub fn findPersonIndexById(people: []const Person, person_id: usize) ?usize {
     for (people, 0..) |person, index| {
         if (person.id == person_id) return index;
@@ -651,6 +658,22 @@ pub fn findStickConnection(connections: []const Connection, person_id: usize) ?C
         if (connection.stick_person_id == person_id) return connection;
     }
     return null;
+}
+
+pub fn isConnectionGroupFirstOccurrence(connections: []const Connection, index: usize) bool {
+    const target = connections[index];
+    for (connections[0..index]) |existing| {
+        if (existing.cave_person_id == target.cave_person_id) return false;
+    }
+    return true;
+}
+
+pub fn connectionGroupCount(cave_person_id: usize, connections: []const Connection) u8 {
+    var count: u8 = 0;
+    for (connections) |connection| {
+        if (connection.cave_person_id == cave_person_id) count += 1;
+    }
+    return count;
 }
 
 pub fn increaseConnectionHappiness(world_state: *World, primary_index: usize, other_index: usize, rate_scale: f32) void {
@@ -681,6 +704,16 @@ pub fn personHasControlledCaveConnection(person_id: usize, connections: []const 
         if (connection.cave_person_id == person_id and connection.stick_has_control) return true;
     }
     return false;
+}
+
+pub fn controlledCaveOccupancy(person_id: usize, cave_type: CaveType, connections: []const Connection) u8 {
+    var count: u8 = 0;
+    for (connections) |connection| {
+        if (connection.cave_person_id == person_id and connection.cave_type == cave_type and connection.stick_has_control) {
+            count += 1;
+        }
+    }
+    return count;
 }
 
 pub fn caveTypeLabel(cave_type: CaveType) []const u8 {

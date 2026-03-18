@@ -124,20 +124,16 @@ fn clearAllConnectionsForPerson(world_state: *world.World, person_id: usize) voi
             continue;
         }
 
-        const stick = world.findPersonById(world_state.people.items, connection.stick_person_id);
-        const cave = world.findPersonById(world_state.people.items, connection.cave_person_id);
-        if (stick) |stick_person| {
-            if (world.findPersonIndexById(world_state.people.items, stick_person.id)) |index| {
-                world_state.people.items[index].moods.aroused = 0;
-            }
-        }
-        if (cave) |cave_person| {
-            if (world.findPersonIndexById(world_state.people.items, cave_person.id)) |index| {
-                world_state.people.items[index].moods.aroused = 0;
-            }
-        }
+        resetArousalIfPresent(world_state, connection.stick_person_id);
+        resetArousalIfPresent(world_state, connection.cave_person_id);
 
         _ = world_state.connections.swapRemove(i);
+    }
+}
+
+fn resetArousalIfPresent(world_state: *world.World, person_id: usize) void {
+    if (world.findPersonPtrById(world_state.people.items, person_id)) |person| {
+        person.moods.aroused = 0;
     }
 }
 
@@ -299,10 +295,6 @@ fn findSafeConnectionGroupCenter(
     return best_location;
 }
 
-fn personIsConnected(person_id: usize, connections: []const world.Connection) bool {
-    return world.personConnectionCount(person_id, connections) > 0;
-}
-
 fn displacePerson(world_state: *world.World, person_index: usize, delta: world.Vec2) void {
     const current = world_state.people.items[person_index].location;
     world_state.people.items[person_index].location = world.clampLocationToPlace(.{
@@ -334,8 +326,8 @@ fn resolveCollisions(world_state: *world.World) void {
                 }
 
                 const overlap = world.min_person_separation - distance;
-                const left_connected = personIsConnected(left.id, world_state.connections.items);
-                const right_connected = personIsConnected(right.id, world_state.connections.items);
+                const left_connected = world.personConnectionCount(left.id, world_state.connections.items) > 0;
+                const right_connected = world.personConnectionCount(right.id, world_state.connections.items) > 0;
 
                 if (!left_connected and !right_connected) {
                     const half = overlap * 0.5;
@@ -394,14 +386,7 @@ fn updateConnectionActivity(world_state: *world.World, random: std.Random, alloc
         const cave_index = world.findPersonIndexById(world_state.people.items, connection.cave_person_id) orelse continue;
 
         applyConnectionEnergyLoss(world_state, stick_index, 3.0 * connection_rate_scale);
-        var cave_loss_applied = false;
-        for (world_state.connections.items[0..connection_index]) |existing_connection| {
-            if (existing_connection.cave_person_id == connection.cave_person_id) {
-                cave_loss_applied = true;
-                break;
-            }
-        }
-        if (!cave_loss_applied) {
+        if (world.isConnectionGroupFirstOccurrence(world_state.connections.items, connection_index)) {
             applyConnectionEnergyLoss(world_state, cave_index, 3.0 * connection_rate_scale);
         }
 
@@ -448,12 +433,7 @@ fn updateConnectionActivity(world_state: *world.World, random: std.Random, alloc
                 const skill = world.caveSkillLevelPtr(&world_state.people.items[i].skills, cave_type);
                 skill.* = world.clampStat(skill.* + (@as(f32, @floatFromInt(occupancy)) * (2.0 * connection_rate_scale)));
 
-                var controlled_occupancy: u8 = 0;
-                for (world_state.connections.items) |connection| {
-                    if (connection.cave_person_id == person.id and connection.cave_type == cave_type and connection.stick_has_control) {
-                        controlled_occupancy += 1;
-                    }
-                }
+                const controlled_occupancy = world.controlledCaveOccupancy(person.id, cave_type, world_state.connections.items);
                 if (controlled_occupancy > 0) {
                     world_state.people.items[i].skills.submit = world.clampStat(world_state.people.items[i].skills.submit + (@as(f32, @floatFromInt(controlled_occupancy)) * connection_rate_scale));
                 }
